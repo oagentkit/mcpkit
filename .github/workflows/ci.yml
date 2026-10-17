@@ -1,0 +1,25 @@
+name: CI
+
+# 薄调用层：门禁规则本体在 oagentkit/.github/.github/workflows/go-ci.yml。
+# 改门禁规则只改那一个仓，这里不用动。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Lint & Test
+    uses: oagentkit/.github/.github/workflows/go-ci.yml@main
+    with:
+      go-version: '1.26'
