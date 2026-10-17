@@ -1,0 +1,13 @@
+# 构建产物
+/bin/
+/dist/
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 测试与覆盖率
+*.out
+coverage.*
