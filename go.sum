@@ -80,8 +80,6 @@ github.com/modern-go/reflect2 v1.0.2 h1:xBagoLtFs94CBntxluKeaWgTMpvLxC4ur3nMaC9G
 github.com/modern-go/reflect2 v1.0.2/go.mod h1:yWuevngMOJpCy52FWWMvUC8ws7m/LJsjYzDa0/r8luk=
 github.com/nikolalohinski/gonja v1.5.3 h1:GsA+EEaZDZPGJ8JtpeGN78jidhOlxeJROpqMT9fTj9c=
 github.com/nikolalohinski/gonja v1.5.3/go.mod h1:RmjwxNiXAEqcq1HeK5SSMmqFJvKOfTfXhkJv6YBtPa4=
-github.com/oagentkit/runtime v0.4.0 h1:12p6XD2LadDOcgE1xaPC+ksieBR5lZ25xlF4jWfRmng=
-github.com/oagentkit/runtime v0.4.0/go.mod h1:5Jr1cygH+CvFXCrRTSMfHOKdi1ySd3Ao4+nUtn0l6Z4=
 github.com/oekit/concurrency v0.16.0 h1:oKTJ6lrsBAVF2jkvsAqK7uAWVfAlOVQFmnUwetxB1ZM=
 github.com/oekit/concurrency v0.16.0/go.mod h1:K5wV2UwkfvYUQFOawBCmaE29AGhWTGs3hsKu2vvKw4Y=
 github.com/oekit/pkg v0.11.0 h1:zJrlbF29o/0DWVksSsB2dRosQOg2luWz/F4lhCzYSkI=
