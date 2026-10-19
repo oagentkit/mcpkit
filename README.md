@@ -41,6 +41,6 @@ gofmt -l .
 
 MIT
 - **建连必须单飞。** 同一 server 的并发建连要合并为一次，
-  不得每次 `Allow` 都新建连接。
+  不得每次 `Pool.Tools`（带 `ToolSpec.Allow` 白名单）都新建连接。
 - **等待方的 ctx 取消要各自生效**，不能干等 leader。
 - 工具注解（`mcp.ToolAnnotation`）归一时，`nil` 视为规范缺省，**不得当成「无限制」**。
