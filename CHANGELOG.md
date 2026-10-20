@@ -2,6 +2,17 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.8.3] — 2026-10-20
+
+- 杂务(deps)：依赖地板抬到最新
+
+地板对齐到发版时刻的各依赖最新 tag：
+- oekit/pkg、oekit/concurrency 抬到 v0.18.0（oekit/logx 已是最新 v0.7.1）
+- 矩阵内跨仓依赖抬到各仓最新 tag
+依据 matrix-tools#44：最新 tag 的依赖地板在「打 tag 那一刻」就已落后一格，
+只能靠后续版本补齐（tag 受 protect-tags ruleset 保护不能重打）。
+
+
 ## [v0.8.2] — 2026-10-20
 
 ### 新增(mcp)：自检 / 工具目录差集 / 健康聚合 / 错误分类原语
