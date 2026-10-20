@@ -4,7 +4,7 @@
 
 ## [v0.8.1] — 2026-10-20
 
-### 修复(docs)：Allow 是字段不是方法——改指 Pool.Tools 与 ToolSpec.Allow (#6)
+### 修复(docs)：Allow 是字段不是方法——改指 Pool.Tools 与 ToolSpec.Allow
 
 Co-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
@@ -14,7 +14,7 @@ Co-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
 ## [v0.7.0] — 2026-10-19
 
-- 杂务(deps)：依赖地板对齐远端最新（runtime v0.6.0 / concurrency v0.17.1） (#13)
+- 杂务(deps)：依赖地板对齐远端最新（runtime v0.6.0 / concurrency v0.17.1）
 
 ## [v0.6.0] — 2026-10-19
 
@@ -34,10 +34,10 @@ Co-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 AGENTS.md 立了三条纪律：建连必须单飞、等待方 ctx 各自生效、工具注解 nil 视为规范缺省。
 门禁：go build / go vet / go test -race 全绿，gofmt 干净。
 
-- 杂务(deps)：依赖地板升到「历史最新 + 0.1.0」 (#4)
-- 杂务(deps)：跟进最新 tag (#3)
-- 杂务(deps)：oekit 依赖升级 (#2)
-- 杂务(deps)：跨仓依赖升级 (#1)
+- 杂务(deps)：依赖地板升到「历史最新 + 0.1.0」
+- 杂务(deps)：跟进最新 tag
+- 杂务(deps)：oekit 依赖升级
+- 杂务(deps)：跨仓依赖升级
 - 杂务(deps)：oekit/concurrency v0.12.0 -> v0.13.1
 - 杂务(deps)：oekit 三模块升至最新（pkg v0.13.0 / concurrency v0.12.0 / logx v0.7.0）
 - 杂务(deps)：oekit/concurrency v0.6.0 -> v0.9.0
