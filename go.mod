@@ -8,7 +8,7 @@ require (
 	github.com/cloudwego/eino v0.9.21
 	github.com/eino-contrib/jsonschema v1.0.3
 	github.com/mark3labs/mcp-go v1.1.1
-	github.com/oagentkit/runtime v0.7.1
+	github.com/oagentkit/runtime v0.7.2
 	github.com/oekit/concurrency v0.19.0
 )
 
