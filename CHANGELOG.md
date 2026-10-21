@@ -2,6 +2,58 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.8.4] — 2026-10-21
+
+- 杂务(deps)：依赖地板追平上游本轮新版本——oekit/concurrency v0.19.0 oekit/pkg v0.20.0
+
+## 下游要做什么
+**`go mod tidy`**。地板抬高对下游是隐式 breaking：不跑就报
+`updates to go.mod needed`，且报错不提真正原因（**不是本仓的 API 变了**）。
+本仓**自身代码零改动**——只看本仓的 diff 看不出这是一次地板抬高。
+## 抬了哪几块、为什么无行为差异
+**`github.com/oekit/concurrency` v0.18.0 → v0.19.0**
+上游 diff 只动了 2 个包：
+- `retry`：**抖动 panic 修复**——`rand.Int63n` 的契约是 n > 0，而「退避幅度为 0」
+  是生产可达路径（cfg.Delay=0 / DelayHint 返回 0 / float64→int64 溢出成负数），
+  旧实现在这些路径上直接 panic。改为钳到 [0, MaxInt64]。
+- `syncx`：新增全局在飞闸门原语（`Gate`）+ 说明同步。
+**`breaker` 与 `async` 两个包一字未动。**
+**本仓实际 import 的 `oekit/concurrency` 子包：async singleflight **
+与上游改动相交的：**（无）**
+**`github.com/oekit/pkg` v0.18.0 → v0.20.0**
+上游 diff 只动了 5 个包：
+- `errors`：**纯增量**——新增 `Errorf`（格式化 + `%w` 包装，nil-safe）。
+  `New`/`As`/`Is`/`Unwrap`/`Wrap` 是同型透传，一字未动。
+- `httpjson`：**退避溢出修复**——旧写法 `base << (attempt-1)` 在 attempt 较大时
+  int64 溢出成负数，负数绕过 `MaxDelay` 封顶，`time.After(负数)` 立刻返回
+  ⇒ **该轮退避彻底消失**。改为乘法 + 饱和封顶。正常 attempt 数（1..20）下
+  结果**逐字相同**，差别只在溢出的病态路径。
+- `urlguard`：**纯增量**——新增 `WithExactHosts`，未设置时行为与既有完全一致。
+- `stringx`：**仅注释**（补 `TruncEllipsis` 的 n 语义说明）。
+- `pathx`：新增包（`SanitizeRel` 等）。
+**本仓实际 import 的 `oekit/pkg` 子包：（本仓未直接 import oekit/pkg 的任何子包）**
+与上游改动相交的：**（无）**
+## 门禁
+```
+go build / vet / test -race   ✅
+gofmt -l .                    ✅ 空
+```
+
+
+- 文档(AGENTS)：补「发版顺序」小节，指向 org CONTRIBUTING 单一副本
+
+13 个业务仓的 AGENTS.md 此前对发版顺序零覆盖（只有 textx 有个
+「### 版本与发版」标题，但里面只讲 SemVer 与 module 路径），
+发版顺序只写在 org 规则仓的 .github/CONTRIBUTING.md 里，单仓读者看不到。
+本次只加**指针 + 本仓相关提醒**，runbook 本体保持**单一副本**
+（CONTRIBUTING §发版），避免 13 份副本各自漂移。
+覆盖四条：
+- CHANGELOG.md 由 matrix-tools/scripts/gen_changelogs.py 从 git 历史生成，不要手改
+- tag 必须落在 CHANGELOG 提交之后（下游 go get 拿到的是 tag 快照）
+- 警告：无参重生成会吞掉待发版段，--next-version 是唯一能产出待发版段的开关
+- 本仓相关提醒（见正文）
+
+
 ## [v0.8.3] — 2026-10-20
 
 - 杂务(deps)：依赖地板抬到最新
