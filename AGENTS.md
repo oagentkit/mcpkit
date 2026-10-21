@@ -37,6 +37,23 @@
 
 - **本仓不引入日志依赖。** tier0 加日志等于给所有下游抬地板；需要观测输出时返回 error 或交给调用方。
 
+### 发版顺序
+
+本仓的 `CHANGELOG.md` 由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，
+**不要手改**。发版顺序的**单一副本**见 org 规则仓
+[CONTRIBUTING §发版](https://github.com/oagentkit/.github/blob/main/CONTRIBUTING.md#发版)：
+**预写待发版段 → 提交 CHANGELOG.md → 在那个提交上打 annotated tag**。
+tag 必须落在 CHANGELOG 提交**之后** —— 下游 `go get` 拿到的是 tag 快照，
+快照里的 CHANGELOG.md 若缺自己那一段，发布说明就是残缺的。
+
+⚠️ 无参重生成 CHANGELOG 会**吞掉待发版段**：生成器只按已存在的 tag 切段，
+`--next-version` 是唯一能产出待发版段的开关。**预写之后、打 tag 之前，
+不要跑无参重生成。**
+
+打 tag 前自检依赖地板：内部 `require` 要钉在**打 tag 那一刻**各依赖仓的最新 tag
+（`matrix-tools/scripts/verify_tag_floor.py`）。本仓已有 1 个 CHANGELOG-at-tag 欠账
+（`mcpkit@v0.8.1`）—— **反面例子，不是范例**。
+
 ## 仓特有纪律
 
 - **建连必须单飞。** 同一 server 的并发建连要合并为一次，
