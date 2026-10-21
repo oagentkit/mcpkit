@@ -2,6 +2,32 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.8.5] — 2026-10-21
+
+- 杂务(deps)：依赖地板跟到矩阵本轮新版本——runtime v0.7.2
+
+## 下游要做什么
+**`go mod tidy`**。地板抬高对下游是**隐式破坏性变更**：不跑就报
+`updates to go.mod needed`，且报错不提真正原因（**不是本仓的 API 变了**）。
+本仓**自身代码零改动**——只看本仓的 diff 看不出这是一次地板抬高。
+## 为什么抬
+上一版 tag 打出去时，它依赖的模块的**新版已经先发出**了——
+即「打 tag 那一刻地板就落后」。矩阵的「发版时刻地板时效」门禁
+（`verify_tag_floor.py --org oagentkit --latest-only`）当场报红：
+- github.com/oagentkit/runtime@v0.7.2
+门禁给的修法是「抬 go.mod 地板 → go mod tidy → 重新发 tag」。
+本 PR 就是那条修法。
+## 为什么无行为差异
+被抬的这几个版本**自身也都是纯依赖地板追平**（各仓代码零改动，只抬
+`oekit/pkg` / `oekit/concurrency` / `guardx` / `llm` 四类地板之一），
+本仓用到的转发面与符号集一字未动。
+## 门禁
+```
+go build / vet / test -race   ✅
+gofmt -l .                    ✅ 空
+```
+
+
 ## [v0.8.4] — 2026-10-21
 
 - 杂务(deps)：依赖地板追平上游本轮新版本——oekit/concurrency v0.19.0 oekit/pkg v0.20.0
