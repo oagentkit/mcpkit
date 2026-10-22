@@ -23,3 +23,15 @@ jobs:
     uses: oagentkit/.github/.github/workflows/go-ci.yml@main
     with:
       go-version: '1.26'
+      # 单仓试点（issue matrix-tools#90）：开启 issue 回执门禁。
+      #
+      # 归属地：**本仓自己 issue 的回执由本仓负责**——
+      # 别的仓的缺口不会把本仓的 PR 弄红（此前这条链路在共享工作流里根本不存在）。
+      #
+      # 范围口径 repo = 非 PR 事件只判调用方本仓；
+      # PR 事件的口径恒为「PR 的 base 仓」（= 本仓），与 scope 无关。
+      #
+      # 这是**试点**：共享工作流里该开关的默认仍是关的（老调用层零行为变化），
+      # 试点验通后才翻默认。回退方式：本仓把这两行删掉即可。
+      receipts-enabled: true
+      receipts-scope: repo
