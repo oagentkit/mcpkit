@@ -2,6 +2,40 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.8.6] — 2026-10-23
+
+- 杂务(deps)：oekit 依赖地板抬到 v0.20.2（oekit/pkg 随 concurrency 带到 v0.22.0）
+
+抬 go.mod 的依赖地板，跟到基座（oekit）本轮新版本：
+- github.com/oekit/concurrency  v0.19.0 -> v0.20.2
+- github.com/oekit/pkg          v0.20.0 -> v0.22.0（indirect，经 concurrency v0.20.2 传递）
+本仓自身代码零改动，只改 go.mod / go.sum。
+下游要做什么：**go mod tidy**——地板抬高对下游是隐式破坏性变更：
+不跑就报 updates to go.mod needed，且报错不提真正原因。
+为什么抬：本仓 tip 的地板还钉在 v0.19.0 / v0.20.0，而基座那边 concurrency
+最新已是 v0.20.2、pkg 最新已是 v0.22.0。矩阵的「发版时刻地板时效」门禁
+（verify_tag_floor.py --org oagentkit，默认 HEAD 口径）报红：下一次打 tag
+就会把落后地板发出去，而 tag 受 protect-tags 保护不可重打。
+为什么无行为差异：上游 concurrency v0.19.0 -> v0.20.2 只动了 syncx/（新增
+Gate.TryAcquire；KeyedGate 的 release 幂等标记由裸 bool 改 atomic CAS）
+与文档/CI 文件，async/ 与 singleflight/ 一字未动——而这两个正是本仓唯一
+import 的子包。oekit/pkg v0.20.0 -> v0.22.0 是纯增量（pathx 新增
+filename/glob/safename、stringx 新增 csv），且本仓未直接 import oekit/pkg
+的任何子包。
+门禁：go build / vet / test -race 通过，gofmt -l 空，go mod tidy -diff 空。
+
+- 杂务(ci)：试点开启 issue 回执门禁——本仓自己 issue 的回执由本仓负责
+
+issue matrix-tools#90 的第 ③ 步（单仓试点）。共享工作流（oagentkit/.github）新增了
+`Receipts (issue 回执落地)` job，但**默认是关的**（老调用层零行为变化）——
+本 PR 显式开启，做一次单仓试点。
+范围口径 `repo` = 非 PR 事件只判调用方本仓；**PR 事件恒判 PR 的 base 仓**（= 本仓），
+与 scope 无关。跨仓全量审计的**唯一硬失败归属地**是 matrix-tools 的每日定时 job
+（06:17），本仓不开全矩阵 ⇒ 别的仓的缺口不会把本仓的 PR 弄红。
+回退方式：删掉本 PR 加的那两行即可（共享工作流里该开关的默认仍是关的）。
+Refs: oagentkit/matrix-tools#90
+
+
 ## [v0.8.5] — 2026-10-21
 
 - 杂务(deps)：依赖地板跟到矩阵本轮新版本——runtime v0.7.2
