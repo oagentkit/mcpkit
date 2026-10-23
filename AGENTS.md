@@ -2,7 +2,7 @@
 
 > MCP 工具池——客户端封装/工具目录/建连单飞/自愈与租约管理
 > module：`github.com/oagentkit/mcpkit` · org：[oagentkit = Open Agent Kit](https://github.com/oagentkit)
-> 矩阵分层：**tier 1**（能力层，依赖 tier0）
+> 矩阵分层：**tier 2**（集成层，依赖 tier0/tier1 + 重第三方地板）
 
 ## 本仓包含
 
@@ -14,7 +14,7 @@
 
 ### 分层与依赖
 
-- 依赖严格自底向上，**禁止反向依赖**。本仓是 tier 1，只允许依赖 tier ≤ 1 的仓。
+- 依赖严格自底向上，**禁止反向依赖**。本仓是 tier 2，只允许依赖 tier ≤ 2 的仓。
 - 本仓依赖的矩阵内仓：`runtime`。
 - 改 module 路径必须同步：全部 import、go.mod、README 安装行。
 
