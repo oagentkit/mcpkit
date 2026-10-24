@@ -1,6 +1,6 @@
 # mcpkit
 
-MCP 工具池——客户端封装/工具目录/建连单飞/自愈与租约管理 —— oagentkit 模块矩阵 **tier 1**（能力层，依赖 tier0）。
+MCP 工具池——客户端封装/工具目录/建连单飞/自愈与租约管理 —— oagentkit 模块矩阵 **tier 2**（集成层，依赖 tier0/tier1 + 重第三方地板）。
 
 ```
 go get github.com/oagentkit/mcpkit
@@ -12,7 +12,7 @@ go get github.com/oagentkit/mcpkit
 
 ## 定位
 
-**tier 1** — 能力层，依赖 tier0。
+**tier 2** — 集成层，依赖 tier0/tier1 + 重第三方地板。
 
 - 本仓依赖的矩阵内仓：`runtime`。
 
