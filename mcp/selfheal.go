@@ -93,7 +93,7 @@ var _ tool.InvokableTool = (*selfHealTool)(nil)
 // 同形态）。evict 带实例比对（cached == dead）——并发自愈时后来者不得摘除
 // 别的自愈刚建好的新连接（曾把健康连接关掉、造成伪失败与重复建连）。
 // 不接收装配期 ctx：重连应使用调用期 ctx（闭包参数），装配期 ctx 在此无义。
-func (p *Pool) selfHealRedial(cfg ServerConfig, allow []string, name string, dead client.MCPClient) func(context.Context) (tool.InvokableTool, error) {
+func (p *Pool) selfHealRedial(cfg ServerConfig, spec ToolSpec, name string, dead client.MCPClient) func(context.Context) (tool.InvokableTool, error) {
 	return func(ctx context.Context) (tool.InvokableTool, error) {
 		if st := p.conn(cfg.Name); st != nil {
 			st.mu.Lock()
@@ -111,7 +111,7 @@ func (p *Pool) selfHealRedial(cfg ServerConfig, allow []string, name string, dea
 		if err != nil {
 			return nil, err
 		}
-		for _, t := range WrapErrorAsObservation(p.assembleTools(cfg, allow, cli, entries)) {
+		for _, t := range WrapErrorAsObservation(p.assembleTools(cfg, spec, cli, entries)) {
 			if it, ok := t.(tool.InvokableTool); ok {
 				if info, ierr := it.Info(ctx); ierr == nil && info.Name == name {
 					return it, nil

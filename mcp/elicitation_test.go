@@ -68,7 +68,7 @@ func TestElicitationHandlerWired(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	tr, err := p.Tools(ctx, []ToolSpec{{Server: "srv"}})
+	tr, err := p.Tools(ctx, []ToolSpec{{Server: "srv", AllowAll: true}})
 	if err != nil {
 		t.Fatalf("Tools 失败: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestElicitationNoHandler(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	tr, err := p.Tools(ctx, []ToolSpec{{Server: "srv"}})
+	tr, err := p.Tools(ctx, []ToolSpec{{Server: "srv", AllowAll: true}})
 	if err != nil {
 		t.Fatalf("Tools 失败: %v", err)
 	}
