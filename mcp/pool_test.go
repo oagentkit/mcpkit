@@ -101,20 +101,71 @@ func TestToolsWhitelist(t *testing.T) {
 	}
 }
 
-func TestToolsEmptyAllowAll(t *testing.T) {
+// TestToolsEmptyAllowGrantsNone 钉住缺省**拒绝**（issue #28 的破坏式变更）。
+//
+// 此前空 Allow = 该 server 的**全部**工具（含破坏性工具）——而这个默认值在
+// 配置里不可见：一份 `allow: []` 看起来像「没限制」，实际是全量授予。
+// 最小权限的责任整个落到了下游。
+func TestToolsEmptyAllowGrantsNone(t *testing.T) {
 	srv := newTestServer(t)
 	cli, _ := client.NewInProcessClient(srv)
 	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "calc", cli)
 	defer p.Close()
 
-	// 空 Allow = 全部工具
+	// 空 Allow = 不授予任何工具（缺省拒绝）
 	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "calc"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.Tools) != 2 {
-		t.Fatalf("空白名单应出全部 2 个工具，得到 %d", len(tr.Tools))
+	if len(tr.Tools) != 0 {
+		t.Fatalf("空白名单不得授予任何工具，得到 %d 个", len(tr.Tools))
+	}
+}
+
+// TestToolsAllowAllGrantsAll 钉住「全给」必须显式写出来。
+//
+// 两种写法等价：AllowAll: true（配置里看得见的开关）或 Allow: ["*"]。
+func TestToolsAllowAllGrantsAll(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec ToolSpec
+	}{
+		{"AllowAll 开关", ToolSpec{Server: "calc", AllowAll: true}},
+		{"Allow 通配符", ToolSpec{Server: "calc", Allow: []string{"*"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			cli, _ := client.NewInProcessClient(srv)
+			p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
+			injectClient(t, p, "calc", cli)
+			defer p.Close()
+
+			tr, err := p.Tools(context.Background(), []ToolSpec{tc.spec})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tr.Tools) != 2 {
+				t.Fatalf("显式全给应出全部 2 个工具，得到 %d", len(tr.Tools))
+			}
+		})
+	}
+}
+
+// TestToolsAllowStillFilters 钉住「显式全给」没有把白名单过滤一起关掉。
+func TestToolsAllowStillFilters(t *testing.T) {
+	srv := newTestServer(t)
+	cli, _ := client.NewInProcessClient(srv)
+	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
+	injectClient(t, p, "calc", cli)
+	defer p.Close()
+
+	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "calc", Allow: []string{"calculate"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.Tools) != 1 {
+		t.Fatalf("白名单应只出 1 个工具，得到 %d", len(tr.Tools))
 	}
 }
 

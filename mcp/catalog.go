@@ -100,12 +100,18 @@ func listTools(ctx context.Context, cli client.MCPClient, tr transport.Interface
 	return entries, nil
 }
 
-// convTools 目录条目 → eino 工具（内存转换，无 IO）。allow 空 = 全部；过滤保持
-// 服务端目录序（与 eino-ext GetTools 行为一致）。
-func convTools(cli client.MCPClient, entries []toolEntry, allow []string) []tool.BaseTool {
+// convTools 目录条目 → eino 工具（内存转换，无 IO）。
+//
+// allow 语义（**破坏式变更**，v0.9.0）：
+//   - allow 为空 ⇒ **不授予任何工具**（缺省拒绝）；
+//   - all 为真（ToolSpec.AllowAll 或 allow 含 "*"）⇒ 该 server 全部工具；
+//   - 其余 ⇒ 按工具名白名单。过滤保持服务端目录序（与 eino-ext GetTools 行为一致）。
+func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bool) []tool.BaseTool {
 	want := map[string]struct{}{}
-	all := len(allow) == 0
 	for _, n := range allow {
+		if n == allowAllWildcard {
+			continue
+		}
 		want[n] = struct{}{}
 	}
 	out := make([]tool.BaseTool, 0, len(entries))

@@ -93,8 +93,39 @@ type OAuthClientConfig struct {
 type ToolSpec struct {
 	// Server ServerConfig.Name。
 	Server string
-	// Allow 工具名白名单；空 = 该 server 全部工具。
+	// Allow 工具名白名单。
+	//
+	// ⚠️ **破坏式变更**（v0.9.0）：**空 = 不授予任何工具**（缺省拒绝）。
+	// 此前空 = 该 server 的**全部**工具——而这个默认值在配置里**不可见**：
+	// 一份 `allow: []` 看起来像「没限制」，实际是把该 server 的全部工具
+	// （含删除/执行类破坏性工具）都授予了模型，最小权限的责任整个落到了下游
+	// （下游只能靠事后门禁兜——那时配置已生效、模型已拿到工具）。
+	//
+	// 要「全给」必须**显式**写：AllowAll: true，或 Allow 里含 "*"。
 	Allow []string
+	// AllowAll 显式授予该 server 的全部工具（缺省拒绝的对立面，必须写在配置里）。
+	//
+	// 与 Allow 里的 "*" 等价；同时存在时以本字段为准（Allow 被忽略）。
+	AllowAll bool
+}
+
+// allowAllWildcard 白名单里的通配符：显式「全给」。
+const allowAllWildcard = "*"
+
+// grantsAll 该 spec 是否显式授予全部工具。
+//
+// **破坏式变更**（v0.9.0）：空 Allow **不再**等于「全部」——缺省是拒绝。
+// 全给必须显式：AllowAll 为真，或 Allow 里含 "*"。
+func (s ToolSpec) grantsAll() bool {
+	if s.AllowAll {
+		return true
+	}
+	for _, n := range s.Allow {
+		if n == allowAllWildcard {
+			return true
+		}
+	}
+	return false
 }
 
 // Pool MCP 连接池：lazy 建连（首次 Tools 时）、连接缓存复用、Close 全量回收。
@@ -341,10 +372,11 @@ func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec
 		p.notifyError(cfg.Name, err)
 		return nil, err
 	}
-	tools := p.assembleTools(cfg, spec.Allow, cli, entries)
+	tools := p.assembleTools(cfg, spec, cli, entries)
 	// Allow 白名单全部未命中（拼写错误等）：转换层静默返回空表——经 OnError
 	// 告警并记入 Failed，避免 agent 拿到空工具表却无从排查
-	if len(tools) == 0 && len(spec.Allow) > 0 {
+	// （显式「全给」时不算：一台没有工具的 server 就是 0 个，不是白名单打错）
+	if len(tools) == 0 && len(spec.Allow) > 0 && !spec.grantsAll() {
 		err := fmt.Errorf("mcp: %s 白名单 %v 无一命中（返回 0 个工具）", cfg.Name, spec.Allow)
 		p.notifyError(cfg.Name, err)
 		return nil, err
@@ -357,8 +389,8 @@ func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec
 // convTools——lease 注入漏迁移，自愈重试期间 inFlight==0，重试时长超过
 // maxIdle 时连接可被闲置回收（第六轮审计）。leaseUse 是唯一带 lease 的装配点，
 // 双路径手工对齐的漂移面就此消除。
-func (p *Pool) assembleTools(cfg ServerConfig, allow []string, cli client.MCPClient, entries []toolEntry) []tool.BaseTool {
-	tools := convTools(cli, entries, allow)
+func (p *Pool) assembleTools(cfg ServerConfig, spec ToolSpec, cli client.MCPClient, entries []toolEntry) []tool.BaseTool {
+	tools := convTools(cli, entries, spec.Allow, spec.grantsAll())
 	lease := p.leaseUse(cfg.Name)
 	for _, t := range tools {
 		if it, ok := t.(*invokableTool); ok {
@@ -382,7 +414,7 @@ func (p *Pool) wrapSelfHeal(ctx context.Context, cfg ServerConfig, spec ToolSpec
 			out = append(out, &selfHealTool{
 				name:   info.Name,
 				inner:  it,
-				redial: p.selfHealRedial(cfg, spec.Allow, info.Name, cli),
+				redial: p.selfHealRedial(cfg, spec, info.Name, cli),
 			})
 			continue
 		}
