@@ -83,7 +83,8 @@ func TestToolsWhitelist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Name != "calculate" {
+	// 暴露名带 server 命名空间（issue #29）：模型侧要能分辨同名工具的来源。
+	if info.Name != "calc.calculate" {
 		t.Fatalf("工具名 = %q", info.Name)
 	}
 
