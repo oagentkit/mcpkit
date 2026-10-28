@@ -2,6 +2,135 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.9.0] — 2026-10-28
+
+### 新增(mcp)：按 server + 名字取单个工具，工具归属结构化
+
+issue #30：Pool.Tools 跨 server 返回**扁平列表**，只有 Failed 是按 server 索引的
+⇒ 拿到的工具没有「它来自哪个 server」的结构化归属。调用方要取「某个 server 的
+某个工具」只能写 `res.Tools[0]` 这种**位置假设**：Allow 给多个工具时取到的
+可能是**另一个**工具，server 列举部分失败时同样可能取错——两种失效都是**静默**的
+（调用成功、调的是别的工具）。
+改动：
+- 新增 `Pool.Tool(ctx, server, name)`：按 server + 名字取**单个**工具，
+  取不到是**显式错误**（不是静默拿到别的工具）；name 可写原始工具名或
+  带 server 的全名（与白名单两种写法一致）；
+- `ToolsResult` 增 `ByServer map[string][]tool.BaseTool`：工具归属的结构化面
+  ——不让调用方靠位置猜某个工具来自哪个 server；
+- `Tools` 的扁平列表保留（既有调用方不受影响），但注释写明它是跨 server 扁平的。
+门禁自检：go build ✅ / go vet ✅ / go test -race ✅ 全绿 /
+go mod tidy -diff ✅ / gofmt ✅ / golangci-lint 0 issues ✅。
+反证样本——取不到时静默降级（不报错）⇒ 1 条红；ByServer 归属面缺失 ⇒ 1 条红。
+
+### 新增(mcp)：工具暴露名带 server 命名空间——模型侧不再有同名歧义
+
+issue #29：装配 eino 工具时工具名直接取 MCP 原始名，**不带 server 命名空间**。
+同一个工具名可以来自不同 server ⇒ 给模型的工具清单里就有两组同名工具，模型
+无法从名字分辨来源，命中哪个取决于装配顺序（下游实测 4 组同名工具）。
+破坏式变更（0.x 阶段 minor 版）：模型侧看到的工具名变成 `server.原始名`。
+历史 checkpoint 里的 tool_call 名字与新名对不上。
+改动：
+- 暴露名 = `server + "." + 原始名`（qualifiedName）；**线上仍是原始名**
+  （invokableTool.wireName / callName）；
+- 暴露名与线上名**必须分开**（这是本次最容易踩的坑）：此前调用 server 用的就是
+  `m.info.Name` ⇒ 只改暴露名会把工具调坏——server 那边登记的是原始名，
+  发带命名空间的名字过去它认不出；
+- 白名单**两种写法都命中**：原始名（server 内）与全名（`server.tool`）——
+  下游配置里两种都常见，跨 server 同名时只有全名是确定的；
+- 自愈重装路径（selfHealRedial）两侧都是暴露名 ⇒ 口径一致，不受影响。
+兼容性：模型 prompt 里的工具名会变；白名单写法两种都兼容。
+门禁自检：go build ✅ / go vet ✅ / go test -race ✅ 全绿 /
+go mod tidy -diff ✅ / gofmt ✅ / golangci-lint 0 issues ✅。
+反证样本——不加命名空间 3 条红；线上也用暴露名 5 条红；白名单不认全名 1 条红。
+
+### 修复(mcp)：Allow 空列表不再等于全量授予——缺省拒绝，全给必须显式
+
+issue #28：ToolSpec.Allow 为空 = 该 server 的**全部**工具（含破坏性工具），
+而这个默认值在配置里**不可见**：一份 `allow: []` 看起来像「没限制」，实际是
+把该 server 的全部工具都授予了模型。最小权限的责任整个落到了下游——下游只能
+靠事后门禁兜（那时配置已生效、模型已拿到工具）。
+破坏式变更（0.x 阶段 minor 版）：
+- **空 Allow = 不授予任何工具**（缺省拒绝）；
+- 要「全给」必须显式写：AllowAll: true，或 Allow 里含 "*"（两种写法等价，
+  同时存在时以 AllowAll 为准）。
+改动面：
+- ToolSpec 补 AllowAll bool；Allow 的语义注释写明「空 = 拒绝」与迁移写法；
+- convTools 的 all 由调用方显式传入（此前是「allow 空 ⇒ all」的隐式推导）；
+- assembleTools / selfHealRedial 改收 ToolSpec（白名单与「全给」必须同源，
+  否则自愈重装路径会与装配路径判成两回事）；
+- 「白名单无一命中 ⇒ Failed」在显式全给时不误报（那台 server 本来就没工具）。
+测试迁移（下游同款改动）：依赖旧「空 = 全部」的用例改成显式 AllowAll: true
+（elicitation 2 处 / meta 1 处），并把 TestToolsEmptyAllowAll 重写成
+TestToolsEmptyAllowGrantsNone + TestToolsAllowAllGrantsAll + TestToolsAllowStillFilters。
+兼容性：这是**有意破坏**（缺省拒绝），下游须把「全量授予」改成显式写法
+（AllowAll: true 或 allow: ["*"]），改后行为不变。README/AGENTS.md 由生成器
+维护，本仓两处未描述该默认值 ⇒ 无文档漂移。
+门禁自检：go build ✅ / go vet ✅ / go test -race ✅ 全绿 /
+go mod tidy -diff ✅ / gofmt ✅ / golangci-lint 0 issues ✅。
+反证样本——空 Allow 回到「全部授予」1 条红；AllowAll 开关不生效 2 条红；
+通配符不生效 1 条红。
+
+- 杂务(deps)：oekit/concurrency 依赖地板抬到 v0.22.1
+
+矩阵的**发版时刻地板门禁**（`verify_tag_floor`）要求：打 tag 那一刻的依赖地板
+必须是当时的最新。本仓钉在 `oekit/concurrency v0.22.0`，而基座最新已是
+`v0.22.1` ⇒ 不抬地板就打不出 tag（tag 受 `protect-tags` 保护**不可重打**）。
+改动面：`go.mod` 1 行版本号 + `go.sum` 2 增 2 删。
+门禁自检：go build ✅ / go vet ✅ / go test -race ✅ 全绿 /
+go mod tidy -diff ✅ / gofmt ✅。
+
+- 杂务(deps)：依赖地板追平上游本轮新版本——github.com/oekit/concurrency@v0.22.0
+
+本仓 HEAD 的依赖地板已落后于各依赖的最新版本（`verify_tag_floor.py --org oagentkit --ref HEAD` 判红）。
+本仓一旦发版，就会把落后地板发出去——而 tag 受 protect-tags ruleset 保护、打完不能重打，
+只能靠后续版本补齐。
+本版只抬依赖地板，不改任何行为：
+- github.com/oekit/concurrency v0.22.0 → v0.22.0
+对应 issue matrix-tools#143。
+
+
+- 文档(mcpkit)：刷正 README.md 的层位声明——tier 1 → tier 2
+
+## 现状
+本仓 `README.md` 的两处层位声明写的是**层位重定位之前**的旧层位（tier 1），
+而矩阵单一数据源 `matrix-tools/modules.json` 说本仓是 **tier 2（集成层）**。
+层位重定位的依据见 matrix-tools 提交 `6d800c4`「层位 = 依赖地板」——
+tier 2 的定义是「依赖 tier0/tier1 + 重第三方地板」（`modules.json` 的 `tiers` 映射）。
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| `README.md` 第 3 行（定位声明行） | `**tier 1**` | `**tier 2**` |
+| `README.md` 第 15 行（`## 定位` 自述行） | `**tier 1**` | `**tier 2**` |
+- `modules.json`：`mcpkit` 的 `tier` = **2**，`tiers["2"]` = 集成层
+- 本仓 `AGENTS.md` 第 5 行：**已是** `> 矩阵分层：**tier 2**（集成层，依赖 tier0/tier1 + 重第三方地板）`
+  ⇒ 改之前，本仓的**两个第一入口互相矛盾**（`AGENTS.md` 说 tier 2、`README.md` 说 tier 1）
+## 影响
+`README.md` 是仓级的第一入口（人读 + agent 读）。它写 tier 1 而数据源是 tier 2 ⇒
+读者按 README 判断依赖方向就会算错，而分层是矩阵的**硬不变量**（tier N 不得依赖 tier > N）。
+## 改动
+**只改层位数字与层名，其余段落逐字不动**：
+- 第 3 行：`**tier 1**` → `**tier 2**`，层名 `（能力层，依赖 tier0）` → `（集成层，依赖 tier0/tier1 + 重第三方地板）`
+- `## 定位`：`**tier 1**` → `**tier 2**`，层名 `能力层` → `集成层`
+层名与整段括号说明对齐到 tier 2 的权威表述后，与本仓 `AGENTS.md`
+及 `llm` / `toolgate` / `tools` / `agent` 四个 tier 2 仓的 README 逐字一致。
+diff 只含层位行，`README.md` 的手写段落逐字未动。
+## 验收
+- [x] `python3 matrix-tools/scripts/verify_repo_tiers.py --root .` ⇒ 本仓 README **红 0**（本地实跑，26 处声明全一致）
+- [x] 层位数字与层名与 `modules.json` 一致，且与本仓 `AGENTS.md` 一致
+- [x] **纯 .md 改动** ⇒ 不需要 CHANGELOG 条目、不打 tag、不发版（无发版步骤）
+关联 oagentkit/matrix-tools#123
+
+- 文档(mcpkit)：刷正 AGENTS.md 层位声明——tier 1 → tier 2
+
+AGENTS.md 的层位声明与矩阵单一数据源 modules.json 不一致。
+- 矩阵分层：**tier 1**（能力层，依赖 tier0）→ **tier 2**（集成层，依赖 tier0/tier1 + 重第三方地板）
+- 「本仓是 tier 1，只允许依赖 tier ≤ 1 的仓」→ tier 2
+modules.json 里 mcpkit 的 tier = 2（层名「集成层」；层位 t1 → t2 时带 eino + mcp-go
+地板，MCP 客户端本身绑框架）。层位写错会让人按 tier 1 的口径判依赖方向，
+而分层是矩阵的硬不变量。
+属 matrix-tools#109 的仓级层位漂移；同批修 queue / obs / skillkit / rag。
+diff 只含层位行，AGENTS.md 的手写段落逐字未动。
+
+
 ## [v0.8.6] — 2026-10-23
 
 - 杂务(deps)：oekit 依赖地板抬到 v0.20.2（oekit/pkg 随 concurrency 带到 v0.22.0）
