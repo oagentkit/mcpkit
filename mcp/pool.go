@@ -245,7 +245,16 @@ func (p *Pool) Servers() []string {
 // 工具」，只能把失败当空表静默降级）。
 type ToolsResult struct {
 	// Tools 装配成功的工具（跨 server 并行拉取，按 specs 序稳定）。
+	//
+	// ⚠️ 这是**跨 server 的扁平列表**：拿到的工具没有「它来自哪个 server」的
+	// 结构化归属（工具名虽带 server 命名空间，但那是模型侧的名字，不是归属面）。
+	// 要按 server 取用走 ByServer；要按 server+名字取单个走 Pool.Tool。
 	Tools []tool.BaseTool
+	// ByServer server → 该 server 装配出的工具（按目录序）。
+	//
+	// 它是「工具归属」的结构化面——不让调用方靠位置假设（res.Tools[0]）去猜
+	// 某个工具来自哪个 server。空 = 没有工具。
+	ByServer map[string][]tool.BaseTool
 	// Failed server → 被容忍的失败原因（建连/列举失败、白名单无一命中）。
 	// 失败连接已摘除，下次调用透明重建。空 = 全部成功。OnError 仍发射同源
 	// 通知（遥测钩子），失败面的程序化消费一律走这里。
@@ -337,8 +346,14 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) (ToolsResult, error)
 		return ToolsResult{}, oauthErr
 	}
 	var out []tool.BaseTool
-	for _, t := range results {
+	byServer := map[string][]tool.BaseTool{}
+	for i, t := range results {
 		out = append(out, t...)
+		if len(t) == 0 {
+			continue
+		}
+		name := cfgs[i].Name
+		byServer[name] = append(byServer[name], t...)
 	}
 	if len(out) == 0 && ctxFatal != nil {
 		// 缓存冷 + ctx 取消：调用方拿到 (空表, nil) 会把取消当"server 没有
@@ -346,10 +361,39 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) (ToolsResult, error)
 		// 形态行为须一致（第六轮审计）
 		return ToolsResult{}, ctxFatal
 	}
+	if len(byServer) == 0 {
+		byServer = nil
+	}
 	if len(failed) == 0 {
 		failed = nil
 	}
-	return ToolsResult{Tools: out, Failed: failed}, nil
+	return ToolsResult{Tools: out, ByServer: byServer, Failed: failed}, nil
+}
+
+// Tool 按 server + 工具名取**单个**工具。
+//
+// 「取不到」是**显式错误**，不是静默降级：此前调用方只能写 `res.Tools[0]`
+// 这种**位置假设**——Allow 给多个工具时取到的可能是另一个工具，server 列举
+// 部分失败时同样可能取错，而这两种失效都是**静默**的（调用成功、调的是别的工具）。
+//
+// name 可写**原始工具名**（server 内）或带 server 的全名（"server.tool"）——
+// 与白名单的两种写法一致。
+func (p *Pool) Tool(ctx context.Context, server, name string) (tool.BaseTool, error) {
+	res, err := p.Tools(ctx, []ToolSpec{{Server: server, Allow: []string{name}}})
+	if err != nil {
+		return nil, err
+	}
+	switch len(res.Tools) {
+	case 1:
+		return res.Tools[0], nil
+	case 0:
+		if ferr, ok := res.Failed[server]; ok {
+			return nil, fmt.Errorf("mcp: 取 server %q 的工具 %q 失败: %w", server, name, ferr)
+		}
+		return nil, fmt.Errorf("mcp: server %q 没有工具 %q", server, name)
+	default:
+		return nil, fmt.Errorf("mcp: server %q 的工具 %q 匹配到 %d 个（工具名应唯一）", server, name, len(res.Tools))
+	}
 }
 
 // toolsForSpec 单 spec 的建连→列目录→装配（Tools 的并发单元）。
