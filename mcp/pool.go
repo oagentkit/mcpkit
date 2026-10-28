@@ -390,7 +390,7 @@ func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec
 // maxIdle 时连接可被闲置回收（第六轮审计）。leaseUse 是唯一带 lease 的装配点，
 // 双路径手工对齐的漂移面就此消除。
 func (p *Pool) assembleTools(cfg ServerConfig, spec ToolSpec, cli client.MCPClient, entries []toolEntry) []tool.BaseTool {
-	tools := convTools(cli, entries, spec.Allow, spec.grantsAll())
+	tools := convTools(cli, entries, spec.Allow, spec.grantsAll(), cfg.Name)
 	lease := p.leaseUse(cfg.Name)
 	for _, t := range tools {
 		if it, ok := t.(*invokableTool); ok {

@@ -106,7 +106,10 @@ func listTools(ctx context.Context, cli client.MCPClient, tr transport.Interface
 //   - allow 为空 ⇒ **不授予任何工具**（缺省拒绝）；
 //   - all 为真（ToolSpec.AllowAll 或 allow 含 "*"）⇒ 该 server 全部工具；
 //   - 其余 ⇒ 按工具名白名单。过滤保持服务端目录序（与 eino-ext GetTools 行为一致）。
-func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bool) []tool.BaseTool {
+//
+// 白名单可写**原始工具名**（server 内）或**带 server 的全名**（"server.tool"）——
+// 两种写法都命中（下游配置里两种都常见；跨 server 同名时只有全名是确定的）。
+func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bool, server string) []tool.BaseTool {
 	want := map[string]struct{}{}
 	for _, n := range allow {
 		if n == allowAllWildcard {
@@ -116,14 +119,36 @@ func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bo
 	}
 	out := make([]tool.BaseTool, 0, len(entries))
 	for _, e := range entries {
-		if !all {
-			if _, ok := want[e.tool.Name]; !ok {
-				continue
-			}
+		if !all && !toolAllowed(e, want, server) {
+			continue
 		}
-		out = append(out, convTool(cli, e))
+		out = append(out, convTool(cli, e, server))
 	}
 	return out
+}
+
+// toolAllowed 该目录条目是否命中白名单（原始名或带 server 的全名）。
+func toolAllowed(e toolEntry, want map[string]struct{}, server string) bool {
+	if _, ok := want[e.tool.Name]; ok {
+		return true
+	}
+	_, ok := want[qualifiedName(server, e.tool.Name)]
+	return ok
+}
+
+// qualifiedName 工具的**暴露名**：server + "." + 原始名。
+//
+// 为什么暴露名要带 server（issue #29）：同一个工具名可以来自不同 server——
+// 不带命名空间时，给模型的工具清单里会出现两组同名工具，模型无法从名字分辨
+// 来源，命中哪个取决于装配顺序。
+//
+// ⚠️ 暴露名只是**给模型看的**：调用 server 时仍用原始名（见 invokableTool.wireName）——
+// server 那边登记的是原始名，发带命名空间的名字过去会被拒。
+func qualifiedName(server, name string) string {
+	if server == "" {
+		return name
+	}
+	return server + "." + name
 }
 
 // convTool 单条目录 → eino 可调用工具。转换口径与 eino-ext components/tool/mcp
@@ -131,12 +156,13 @@ func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bo
 // 降级由上层 WrapErrorAsObservation 承担——其识别锚点是错误文本
 // "mcp server return error"，勿改动该文案（类型化 toolResultError 的 Error()
 // 仍输出此文案；改文案须同步 observe 兜底与测试锚点）。
-func convTool(cli client.MCPClient, e toolEntry) tool.BaseTool {
-	return newInvokableTool(cli, e, nil)
+func convTool(cli client.MCPClient, e toolEntry, server string) tool.BaseTool {
+	return newInvokableTool(cli, e, qualifiedName(server, e.tool.Name), nil)
 }
 
-// newInvokableTool 装配可调用工具；lease 非 nil 时调用期登记在途（闲置回收跳过）。
-func newInvokableTool(cli client.MCPClient, e toolEntry, lease func() func()) tool.BaseTool {
+// newInvokableTool 装配可调用工具；exposed 为暴露给模型的工具名（带 server 命名空间）；
+// lease 非 nil 时调用期登记在途（闲置回收跳过）。
+func newInvokableTool(cli client.MCPClient, e toolEntry, exposed string, lease func() func()) tool.BaseTool {
 	inputSchema := &jsonschema.Schema{}
 	inputRaw := e.rawInput
 	if len(inputRaw) == 0 {
@@ -147,8 +173,11 @@ func newInvokableTool(cli client.MCPClient, e toolEntry, lease func() func()) to
 		cli:          cli,
 		lease:        lease,
 		outputSchema: e.outputSchema,
+		// wireName：调用 server 时用的**原始**工具名（server 那边登记的是它）。
+		// 暴露名带 server 命名空间，那是给模型看的——发过去 server 不认。
+		wireName: e.tool.Name,
 		info: &schema.ToolInfo{
-			Name:        e.tool.Name,
+			Name:        exposed,
 			Desc:        e.tool.Description,
 			ParamsOneOf: schema.NewParamsOneOfByJSONSchema(inputSchema),
 		},
@@ -160,10 +189,23 @@ func newInvokableTool(cli client.MCPClient, e toolEntry, lease func() func()) to
 type invokableTool struct {
 	cli  client.MCPClient
 	info *schema.ToolInfo
+	// wireName 调用 server 时用的**原始**工具名（server 那边登记的是它）。
+	// 与 info.Name（暴露名，带 server 命名空间）分开：暴露名是给模型看的，
+	// 线上必须是原始名，否则 server 认不出这个工具。
+	wireName string
 	// lease 调用期在途登记（Pool.leaseUse）；nil = 不登记（测试桩）。
 	lease func() func()
 	// outputSchema 工具声明的出参 schema（raw 通道无损；typed 回退为空）。
 	outputSchema json.RawMessage
+}
+
+// callName 取调用 server 时用的原始工具名；未设置时回落暴露名
+// （直接构造本类型的测试桩没有 wireName）。
+func (m *invokableTool) callName() string {
+	if m.wireName == "" {
+		return m.info.Name
+	}
+	return m.wireName
 }
 
 // OutputSchema 可选能力接口（schema.go OutputSchemer）。
@@ -182,7 +224,9 @@ func (m *invokableTool) InvokableRun(ctx context.Context, args string, _ ...tool
 	result, err := m.cli.CallTool(ctx, mcp.CallToolRequest{
 		Request: mcp.Request{Method: "tools/call"},
 		Params: mcp.CallToolParams{
-			Name:      m.info.Name,
+			// 线上用**原始**工具名：暴露名带 server 命名空间，那是给模型看的，
+			// server 那边登记的是原始名。
+			Name:      m.callName(),
 			Arguments: json.RawMessage(args),
 		},
 	})
