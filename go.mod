@@ -9,7 +9,7 @@ require (
 	github.com/eino-contrib/jsonschema v1.0.3
 	github.com/mark3labs/mcp-go v1.1.1
 	github.com/oagentkit/runtime v0.7.2
-	github.com/oekit/concurrency v0.23.1
+	github.com/oekit/concurrency v0.23.2
 )
 
 require (
