@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -162,4 +163,49 @@ func mustInProcessClient(t *testing.T, srv *server.MCPServer) client.MCPClient {
 		t.Fatalf("in-process client 创建失败: %v", err)
 	}
 	return cli
+}
+
+// TestTextResultUnwrap TextResult 开关双档（oagentkit/mcpkit#39）：缺省返回
+// 完整 CallToolResult JSON 信封（eino-ext toolHelper 同口径）；TextResult=true
+// 返回剥壳后的文本内容——宿主按 tool.Tool 文本惯例直喂 LLM/前端时不必自行
+// 维护剥壳配对。
+func TestTextResultUnwrap(t *testing.T) {
+	srv := server.NewMCPServer("text-mcp", "1.0.0", server.WithToolCapabilities(false))
+	srv.AddTool(mcp.NewTool("hello", mcp.WithDescription("returns plain text")),
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("hello world"), nil
+		})
+
+	run := func(p *Pool) string {
+		t.Helper()
+		tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", Allow: []string{"hello"}}})
+		if err != nil {
+			t.Fatalf("Tools 失败: %v", err)
+		}
+		it, ok := tr.Tools[0].(tool.InvokableTool)
+		if !ok {
+			t.Fatal("工具应为 InvokableTool")
+		}
+		out, err := it.InvokableRun(context.Background(), "{}")
+		if err != nil {
+			t.Fatalf("InvokableRun 失败: %v", err)
+		}
+		return out
+	}
+
+	// 缺省：信封原样（含 content[] 包装层）
+	p0 := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
+	injectClient(t, p0, "srv", mustInProcessClient(t, srv))
+	env := run(p0)
+	if !strings.Contains(env, `"content"`) || !strings.Contains(env, "hello world") {
+		t.Fatalf("缺省应返回完整信封: %q", env)
+	}
+
+	// TextResult=true：剥壳文本
+	p := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
+	p.TextResult = true
+	injectClient(t, p, "srv", mustInProcessClient(t, srv))
+	if got := run(p); got != "hello world" {
+		t.Fatalf("TextResult 应返回剥壳文本，得 %q", got)
+	}
 }
