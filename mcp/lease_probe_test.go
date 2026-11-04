@@ -84,9 +84,9 @@ func TestStartIdleReaperAfterCloseRejected(t *testing.T) {
 	p.Close()
 	p.StartIdleReaper(time.Millisecond, time.Hour)
 	p.mu.Lock()
-	stopped := p.reapStop
+	started := p.reaping
 	p.mu.Unlock()
-	if stopped != nil {
-		t.Fatal("Close 后不应再启动回收协程")
+	if started {
+		t.Fatal("Close 后不应再启动回收循环")
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/oekit/concurrency/async"
+	"github.com/oekit/concurrency/fanout"
 	"os/exec"
 	"sort"
 	"strings"
@@ -131,7 +132,7 @@ func (s ToolSpec) grantsAll() bool {
 // Pool MCP 连接池：lazy 建连（首次 Tools 时）、连接缓存复用、Close 全量回收。
 // 闲置回收/探活租约面见 lease.go（ReapIdle/StartIdleReaper/PingServer）。
 type Pool struct {
-	// mu 护生命周期与 per-server 状态表（closed/cfgs/conns/reapStop）。
+	// mu 护生命周期与 per-server 状态表（closed/cfgs/conns/reaping）。
 	// 单 server 的连接/目录/闲置/在途拆到 connState 自锁——Tools 跨 server
 	// 并行后，原先一把大锁会把不同 server 的 cache-hit/touch 全串行。
 	mu sync.Mutex
@@ -145,8 +146,9 @@ type Pool struct {
 	dialGroup singleflight.Flight[client.MCPClient]
 	// errMu 串行化 OnError（Tools 跨 server 并行后回调不得被并发调用）。
 	errMu sync.Mutex
-	// reapStop 闲置回收协程停止信号（StartIdleReaper 置位；Close 关闭）。
-	reapStop chan struct{}
+	// reaping 闲置回收循环在跑标志（StartIdleReaper 置位防重复启动；Close
+	// 复位）。循环本体挂 baseCtx——Close 收口 baseCtx 即停轮，无须独立信号。
+	reaping bool
 	// baseCtx 连接生命周期 ctx（NewPool 建、Close 收口）：stdio transport 的
 	// 存活期 ctx 与 client 的双向 handler 注册共用——不得绑在拨号预算 cctx 上
 	//（dialAndRegister 返回即 cancel，绑上去会让带外 server→client 请求全部
@@ -300,54 +302,83 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) (ToolsResult, error)
 		}
 	}
 
-	results := make([][]tool.BaseTool, len(specs))
+	// 扇出收编 fanout.Map（concurrency v0.22.0 落地）：结果按 specs 顺序归位、
+	// 项内 panic 收编为该 server 的失败项——旧 GoSafe 手搓版把 panic 吞进全局
+	// 兜底，该 server 的工具既不进 Tools 也不进 Failed（静默消失）；现在显式
+	// 入 Failed 并补发 OnError，与容忍失败同源通知
+	type fanoutItem struct {
+		cfg  ServerConfig
+		spec ToolSpec
+	}
+	items := make([]fanoutItem, len(specs))
+	for i := range specs {
+		items[i] = fanoutItem{cfg: cfgs[i], spec: specs[i]}
+	}
+	perServer, ferr := fanout.Map(ctx, items, len(items), func(_ context.Context, it fanoutItem) ([]tool.BaseTool, error) {
+		tools, err := p.toolsForSpec(ctx, it.cfg, it.spec)
+		if err == nil {
+			return tools, nil
+		}
+		// oauth/取消分类按失败当时的 ctx 判定——fanout.Map 的汇总在全部项
+		// 结束之后，届时 ctx 已凉，事后判会把取消前的真实失败误判成取消；
+		// 项内打标，汇总侧拆包
+		if client.IsOAuthAuthorizationRequiredError(err) {
+			return nil, &oauthRequiredError{err}
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, &callerCanceledError{cerr}
+		}
+		return nil, err // 失败已在 toolsForSpec 内经 OnError 发射、连接已摘除
+	})
 	var (
-		mu       sync.Mutex
 		oauthErr error
 		ctxFatal error // 调用方取消：本地取消不得记成 server 失败
 		failed   = map[string]error{}
 	)
-	var wg sync.WaitGroup
-	for i := range specs {
-		wg.Add(1)
-		// async.GoSafe：fanout 体跑 dial/Initialize/SDK 解析——外部 SDK panic
-		// 不得打死进程（ekit 裸 go 收编纪律）
-		async.GoSafe(func() {
-			defer wg.Done()
-			i := i
-			tools, err := p.toolsForSpec(ctx, cfgs[i], specs[i])
-			if err != nil {
-				if client.IsOAuthAuthorizationRequiredError(err) {
-					mu.Lock()
+	if ferr != nil {
+		var fe *fanout.Error
+		if errors.As(ferr, &fe) {
+			for _, f := range fe.Failed {
+				it := items[f.Index]
+				err := f.Err
+				var oe *oauthRequiredError
+				if errors.As(err, &oe) {
 					if oauthErr == nil {
-						oauthErr = err
+						// 多 server 同时 oauth 失败取 specs 序首个（旧版为完成序）
+						oauthErr = oe.err
 					}
-					mu.Unlock()
-					return
+					continue
 				}
-				if cerr := ctx.Err(); cerr != nil {
-					mu.Lock()
+				var ce *callerCanceledError
+				if errors.As(err, &ce) {
 					if ctxFatal == nil {
-						ctxFatal = cerr
+						ctxFatal = ce.err
 					}
-					mu.Unlock()
-					return
+					continue
 				}
-				mu.Lock()
-				failed[cfgs[i].Name] = err
-				mu.Unlock()
-				return // 失败已在 toolsForSpec 内经 OnError 发射、连接已摘除
+				// ctx 已凉时未起跑的项由 fanout 直接记为裸 ctx 错误（不经
+				// 项内 fn 打标）——同归取消桶，不记成 server 失败
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					if ctxFatal == nil {
+						ctxFatal = err
+					}
+					continue
+				}
+				var pe *async.PanicError
+				if errors.As(err, &pe) {
+					err = fmt.Errorf("mcp: server %q 工具装配 panic: %v", it.cfg.Name, pe.Value)
+					p.notifyError(it.cfg.Name, err)
+				}
+				failed[it.cfg.Name] = err
 			}
-			results[i] = tools
-		})
+		}
 	}
-	wg.Wait()
 	if oauthErr != nil {
 		return ToolsResult{}, oauthErr
 	}
 	var out []tool.BaseTool
 	byServer := map[string][]tool.BaseTool{}
-	for i, t := range results {
+	for i, t := range perServer {
 		out = append(out, t...)
 		if len(t) == 0 {
 			continue
@@ -395,6 +426,20 @@ func (p *Pool) Tool(ctx context.Context, server, name string) (tool.BaseTool, er
 		return nil, fmt.Errorf("mcp: server %q 的工具 %q 匹配到 %d 个（工具名应唯一）", server, name, len(res.Tools))
 	}
 }
+
+// oauthRequiredError / callerCanceledError Tools 扇出的项内分类标记：oauth
+// 授权态与调用方取消要在失败当时按 ctx.Err() 判定（fanout.Map 的汇总在全部
+// 项结束之后，届时 ctx 已凉）——项内包一层标记，汇总侧 errors.As 拆包后按
+// 原始错误入 Failed / 上抛。
+type oauthRequiredError struct{ err error }
+
+func (e *oauthRequiredError) Error() string { return e.err.Error() }
+func (e *oauthRequiredError) Unwrap() error { return e.err }
+
+type callerCanceledError struct{ err error }
+
+func (e *callerCanceledError) Error() string { return e.err.Error() }
+func (e *callerCanceledError) Unwrap() error { return e.err }
 
 // toolsForSpec 单 spec 的建连→列目录→装配（Tools 的并发单元）。
 // 返回 error：OAuth 授权态（调用方 fail-fast）或被容忍的失败（调用方记入
@@ -787,13 +832,9 @@ func (p *Pool) Close() {
 	for _, st := range p.conns {
 		states = append(states, st)
 	}
-	stop := p.reapStop
-	p.reapStop = nil
+	p.reaping = false
 	cancel := p.baseCancel
 	p.mu.Unlock()
-	if stop != nil {
-		close(stop)
-	}
 	if cancel != nil {
 		cancel() // 连接生命周期 ctx 收口（带外请求通道随连接关闭一并终结）
 	}

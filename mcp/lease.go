@@ -11,8 +11,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/oekit/concurrency/async"
 	"time"
+
+	"github.com/oekit/concurrency/loop"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -148,31 +149,28 @@ func (p *Pool) leaseUse(server string) func() func() {
 	}
 }
 
-// StartIdleReaper 启动后台闲置回收协程：每 interval 周期执行 ReapIdle(maxIdle)。
+// StartIdleReaper 启动后台闲置回收循环：每 interval 周期执行 ReapIdle(maxIdle)。
 // Close 停止；重复启动幂等（只起一个）。
+//
+// 收编 concurrency/loop（ctx 感知 + 忙时丢 tick + 单轮 panic 收编 + 停机排水），
+// 循环挂 baseCtx——Close 收口 baseCtx 即停轮。旧手搓 ticker 版的外层 GoSafe
+// 只把 panic 记进全局日志，单轮 panic 打死回收协程后闲置回收**静默失效且无
+// 任何信号**；loop 的逐轮收编让循环存活（panic 轮跳过、下轮照常）。
 func (p *Pool) StartIdleReaper(interval, maxIdle time.Duration) {
 	p.mu.Lock()
-	if p.reapStop != nil || p.closed {
-		// 已在跑；或池已 Close——Close 后再启动的协程永无人停（泄漏），拒绝
+	if p.reaping || p.closed {
+		// 已在跑；或池已 Close——Close 后再启动的循环永无人停（泄漏），拒绝
 		p.mu.Unlock()
 		return
 	}
-	p.reapStop = make(chan struct{})
-	stop := p.reapStop
+	p.reaping = true
 	p.mu.Unlock()
-	// async.GoSafe：回收协程静默 panic 死亡 = 闲置回收从此失效且无任何信号
-	//（ekit 裸 go 收编纪律）
-	async.GoSafe(func() {
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-t.C:
-				p.ReapIdle(maxIdle)
-			}
-		}
+	loop.Run(p.baseCtx, loop.Config{
+		Interval:   interval,
+		FirstDelay: interval, // 首跑对齐旧 ticker 节拍（首个 interval 后才首轮回收）
+		Name:       "mcp.idle_reaper",
+	}, func(context.Context) {
+		p.ReapIdle(maxIdle)
 	})
 }
 
