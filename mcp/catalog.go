@@ -109,7 +109,7 @@ func listTools(ctx context.Context, cli client.MCPClient, tr transport.Interface
 //
 // 白名单可写**原始工具名**（server 内）或**带 server 的全名**（"server.tool"）——
 // 两种写法都命中（下游配置里两种都常见；跨 server 同名时只有全名是确定的）。
-func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bool, server string) []tool.BaseTool {
+func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bool, server string, textResult bool) []tool.BaseTool {
 	want := map[string]struct{}{}
 	for _, n := range allow {
 		if n == allowAllWildcard {
@@ -122,7 +122,7 @@ func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bo
 		if !all && !toolAllowed(e, want, server) {
 			continue
 		}
-		out = append(out, convTool(cli, e, server))
+		out = append(out, convTool(cli, e, server, textResult))
 	}
 	return out
 }
@@ -156,13 +156,13 @@ func qualifiedName(server, name string) string {
 // 降级由上层 WrapErrorAsObservation 承担——其识别锚点是错误文本
 // "mcp server return error"，勿改动该文案（类型化 toolResultError 的 Error()
 // 仍输出此文案；改文案须同步 observe 兜底与测试锚点）。
-func convTool(cli client.MCPClient, e toolEntry, server string) tool.BaseTool {
-	return newInvokableTool(cli, e, qualifiedName(server, e.tool.Name), nil)
+func convTool(cli client.MCPClient, e toolEntry, server string, textResult bool) tool.BaseTool {
+	return newInvokableTool(cli, e, qualifiedName(server, e.tool.Name), nil, textResult)
 }
 
 // newInvokableTool 装配可调用工具；exposed 为暴露给模型的工具名（带 server 命名空间）；
-// lease 非 nil 时调用期登记在途（闲置回收跳过）。
-func newInvokableTool(cli client.MCPClient, e toolEntry, exposed string, lease func() func()) tool.BaseTool {
+// lease 非 nil 时调用期登记在途（闲置回收跳过）；textResult 语义见 Pool.TextResult。
+func newInvokableTool(cli client.MCPClient, e toolEntry, exposed string, lease func() func(), textResult bool) tool.BaseTool {
 	inputSchema := &jsonschema.Schema{}
 	inputRaw := e.rawInput
 	if len(inputRaw) == 0 {
@@ -173,6 +173,7 @@ func newInvokableTool(cli client.MCPClient, e toolEntry, exposed string, lease f
 		cli:          cli,
 		lease:        lease,
 		outputSchema: e.outputSchema,
+		textResult:   textResult,
 		// wireName：调用 server 时用的**原始**工具名（server 那边登记的是它）。
 		// 暴露名带 server 命名空间，那是给模型看的——发过去 server 不认。
 		wireName: e.tool.Name,
@@ -197,6 +198,8 @@ type invokableTool struct {
 	lease func() func()
 	// outputSchema 工具声明的出参 schema（raw 通道无损；typed 回退为空）。
 	outputSchema json.RawMessage
+	// textResult 语义见 Pool.TextResult。
+	textResult bool
 }
 
 // callName 取调用 server 时用的原始工具名；未设置时回落暴露名
@@ -213,6 +216,19 @@ func (m *invokableTool) OutputSchema() json.RawMessage { return m.outputSchema }
 
 func (m *invokableTool) Info(context.Context) (*schema.ToolInfo, error) { return m.info, nil }
 
+// InvokableRun 执行一次工具调用。返回口径**双档**（oagentkit/mcpkit#39）：
+//
+//   - 缺省（Pool.TextResult=false）：返回**完整 CallToolResult JSON 信封**
+//     ——与 eino-ext toolHelper 同口径（eino 生态默认由宿主剥壳；本包提供
+//     UnwrapMCPText 单源剥壳器，observe 层的 ToolResultError payload 也按
+//     信封形态消费）。
+//   - Pool.TextResult=true：返回剥壳后的**文本内容**（UnwrapMCPText：
+//     content[].text 优先，缺失回落 structuredContent，image/audio 等无文本
+//     payload 给紧凑占位）——宿主按 tool.Tool 惯例把返回值直接喂给 LLM/前端
+//     的多数场景用这一档，不必自行维护剥壳配对。
+//
+// isError:true 的业务失败两档同型：ToolResultError 上抛（payload 恒为信封
+// JSON，observe 层依赖该形态剥错误文本，勿改）。
 func (m *invokableTool) InvokableRun(ctx context.Context, args string, _ ...tool.Option) (string, error) {
 	if m.lease != nil {
 		end := m.lease()
@@ -241,6 +257,9 @@ func (m *invokableTool) InvokableRun(ctx context.Context, args string, _ ...tool
 		// 类型化业务失败（isError:true）：observe/errors.As 经 ToolResultError
 		// 识别；Error() 文案保持锚点，兼容仅认文案的旧消费方。
 		return "", &ToolResultError{payload: marshaled}
+	}
+	if m.textResult {
+		return UnwrapMCPText(string(marshaled)), nil
 	}
 	return string(marshaled), nil
 }

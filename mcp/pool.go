@@ -167,6 +167,16 @@ type Pool struct {
 	// "no elicitation handler configured" 错误（调用失败呈现，与不声明能力的服务端
 	// 行为一致）。池级单点——建连/自愈 redial/Initialize 能力声明共用。
 	ElicitationHandler client.ElicitationHandler
+	// TextResult 工具调用结果剥壳（oagentkit/mcpkit#39）：true 时 InvokableRun
+	// 返回剥壳后的**文本内容**（UnwrapMCPText：content[].text 优先，回落
+	// structuredContent）而非完整 CallToolResult JSON 信封——宿主把返回值
+	// 直接喂给 LLM/前端（tool.Tool 的文本惯例）时开这一档。缺省 false 保持
+	// eino-ext toolHelper 同口径（信封原样返回，宿主自行剥壳——需要完整
+	// structuredContent/isError 元数据的消费方靠它）。
+	//
+	// 池级装配开关（装配期置定，Tools() 之后改不追溯已装配工具）；isError
+	// 的 ToolResultError 上抛两档同型，不受本开关影响。
+	TextResult bool
 }
 
 // connState 单 server 连接侧状态（自锁：不同 server 的调用互不阻塞）。
@@ -479,7 +489,7 @@ func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec
 // maxIdle 时连接可被闲置回收（第六轮审计）。leaseUse 是唯一带 lease 的装配点，
 // 双路径手工对齐的漂移面就此消除。
 func (p *Pool) assembleTools(cfg ServerConfig, spec ToolSpec, cli client.MCPClient, entries []toolEntry) []tool.BaseTool {
-	tools := convTools(cli, entries, spec.Allow, spec.grantsAll(), cfg.Name)
+	tools := convTools(cli, entries, spec.Allow, spec.grantsAll(), cfg.Name, p.TextResult)
 	lease := p.leaseUse(cfg.Name)
 	for _, t := range tools {
 		if it, ok := t.(*invokableTool); ok {
