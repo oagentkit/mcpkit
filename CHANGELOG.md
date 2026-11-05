@@ -2,6 +2,82 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.11.0] — 2026-11-06
+
+### 修复(mcp)：EOF 分类盲区 + 探活刷新目录缓存 + ErrorKind 反解 fail-fast
+
+* fix(mcp): errclass EOF 分类 + 探活刷新目录缓存 + ErrorKind 反解 fail-fast（#52-#54）
+mcpkit#52——isUnreachable 认 io.EOF 与 transport.ErrTransportClosed：stdio
+server 死亡的经典形态（stdout 裸 EOF）此前落 KindUnknown——不重试不自愈，
+最常见故障在分类盲区。
+mcpkit#53——现代协议探活的 tools/list 结果不再丢弃：探活成功路径比对目录
+指纹（数量+名集+InputSchema 摘要，描述不参与），变化即失效 catalog 缓存
+（下次 catalogFor 全量重列）。探活周期 < maxIdle 时 server 工具面/schema
+变化此前永久不可见（与 ReapIdle「目录须随失效重列」的自证理由矛盾）。
+mcpkit#54——ErrorKind.UnmarshalJSON 未知名串 fail-fast：监控配置 typo
+（"unreachble"）此前静默归 KindUnknown（=不可重试）零可见性，与序列化侧
+「监控不该看到裸 int」的用心不对称；空串（KindUnknown 的序列化产物）合法
+回环。
+测试：TestClassifyBareEOFUnreachable / TestErrorKindUnmarshalStrict（含
+五 kind 回环）/ TestProbeFingerprintChanges。全仓 -race 绿。
+关联 oagentkit/mcpkit#52 oagentkit/mcpkit#53 oagentkit/mcpkit#54
+* fix(test): 指纹恒等断言用独立同构切片（staticcheck SA4000）
+---------
+Co-authored-by: Murphy-Yi <zhangyi@Murphy-YideMac-Mini.local>
+
+### 修复(mcp)：九修——data race/自检缓存语义/传输死亡/Dir/拨号闸/零授予告警/原始名 API
+
+* fix(mcp): 九修——data race/自检缓存语义/传输死亡判定/Dir/拨号闸/零授予告警/原始名 API（#43-#51）
+mcpkit#43——catalogFor 的 st.tr/st.protoVersion 读进 st.mu 临界区快照：
+与 registerConn 的写入构成 data race（-race 实测：G1 缓存未命中进
+catalogFor、G2 自愈 evict+重 dial 写同字段）。
+mcpkit#44——Selfchecker 离线模式（cli=nil）改标 unreachable（markAllUnknown
+同语义）：不可达 ≠ 工具缺失（依赖故障不得放大成契约故障——自检层自己的
+不变量此前被离线路径违反）；且离线结论不入 TTL 缓存。
+mcpkit#45——SelfcheckOptions.TTL 语义与文档对齐：<=0 表示不缓存（此前
+0 被重映射为默认 30s，巡检按文档传 0 拿到 Cached=true 陈旧结论）；要默认
+缓存显式传 DefaultSelfcheckTTL。CLI --ttl 0 同步生效。
+mcpkit#48——失败结论永不入缓存（ Reachable=false 一律不落 TTL 缓存）：
+一次瞬断被缓存 30s = 恢复不被感知。比失败短 TTL 更强——不可达本来就
+不该享受「目录静态」假设。
+mcpkit#50——isTransportDead 结构化面优先：mcp-go transport.ErrTransportClosed
+走 errors.Is（此前只有文案子串）；文本兜底补 use of closed/connection
+reset by peer；doc 声明「非英文/自定义传输的断连不在自愈面」的已知边界。
+mcpkit#51——ServerConfig.Dir 直通 stdio 子进程工作目录（cmdFunc 内
+cmd.Dir）：sh -c 包装 + 全量转义的注入面与双形态维护负担就此消除；
+doc 声明「设 Dir 则不经 shell」。
+mcpkit#49——Pool.MaxConcurrentDials 池级装配并发闸（缺省 4）：扇出并发
+此前 = server 数，N 个 stdio server 同时拉起 = fork 风暴。
+mcpkit#47——Pool.OnWarn 装配期软告警：ToolSpec 空 Allow 且未 AllowAll =
+0 工具授予（deny by default 文档化语义），存量配置升级静默「能对话但
+无工具可调」——装配期点名 server 与后果（与 OnError 同一串行化纪律）。
+mcpkit#46——原始名官方 API：RawNamer 接口（invokableTool 实现）+
+RawToolNameOf 帮助函数（无实现回落 Info().Name）；selfheal/observation
+两层包装透传（消费方拿到最外层工具断言不断）。按名判定的消费方不再
+各自实现剥前缀。
+测试：TTL=0 不缓存 / 离线 not-missing-not-cached / 失败不入缓存 /
+RawToolNameOf 四态。全仓 -race 绿。
+关联 oagentkit/mcpkit#43 oagentkit/mcpkit#44 oagentkit/mcpkit#45 oagentkit/mcpkit#46 oagentkit/mcpkit#47 oagentkit/mcpkit#48 oagentkit/mcpkit#49 oagentkit/mcpkit#50 oagentkit/mcpkit#51
+* chore: 删除已无调用方的 markAllMissing（离线模式改标 unreachable 后退役，mcpkit#44）
+---------
+Co-authored-by: Murphy-Yi <zhangyi@Murphy-YideMac-Mini.local>
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.25.1
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/concurrency` | `v0.24.0` | `v0.25.1` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+Co-authored-by: Murphy-Yi <zhangyi@Murphy-YideMac-Mini.local>
+
+
 ## [v0.10.0] — 2026-11-05
 
 ### 新增(mcp)：Pool.TextResult 装配开关——InvokableRun 可返回剥壳文本（#39）
