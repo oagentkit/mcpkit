@@ -333,21 +333,6 @@ func probeTool(ctx context.Context, cli client.MCPClient, name string, args map[
 	return nil
 }
 
-// markAllMissing 全部标 missing（离线模式：无从知道 server 实际有什么）。
-func markAllMissing(names []string, err error) []ToolCheck {
-	out := make([]ToolCheck, 0, len(names))
-	for _, n := range names {
-		out = append(out, ToolCheck{
-			Tool:   n,
-			Status: ToolMissing,
-			Kind:   KindToolMissing,
-			Reason: "未连接 server，无法确认工具是否存在",
-			Err:    err,
-		})
-	}
-	return out
-}
-
 // markAllUnknown 全部标「状态未知」（server 不可达 ≠ 工具缺失）。
 func markAllUnknown(names []string, err error) []ToolCheck {
 	out := make([]ToolCheck, 0, len(names))
