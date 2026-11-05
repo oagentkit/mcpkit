@@ -526,3 +526,66 @@ func TestSelfcheckInitializeOption(t *testing.T) {
 		t.Fatalf("目录应有 read，实得 %v", res.Catalog.Tools)
 	}
 }
+
+// TTL=0 按文档语义不缓存（mcpkit#45）：此前 0 被重映射为默认 30s——巡检方
+// 按文档传 0 期望每次实拉，实际拿到 Cached=true 陈旧结论。
+func TestSelfcheckZeroTLMeansNoCache(t *testing.T) {
+	cli := &scriptedClient{tools: []string{"read"}}
+	sc := NewSelfchecker()
+	opts := SelfcheckOptions{Server: "srv", TTL: 0}
+	first := sc.Check(context.Background(), cli, opts)
+	second := sc.Check(context.Background(), cli, opts)
+	if first.Cached || second.Cached {
+		t.Fatalf("TTL=0 应两次都实拉: first.Cached=%v second.Cached=%v", first.Cached, second.Cached)
+	}
+	if cli.listCount != 2 {
+		t.Fatalf("TTL=0 应实拉两次: %d", cli.listCount)
+	}
+}
+
+// 离线模式（cli=nil）标 unreachable 而非 missing（mcpkit#44）：不可达 ≠ 工具
+// 缺失（依赖故障不得放大成契约故障）；且离线结论不入缓存——30s 内同 server
+// 的在线自检不得命中 down 陈旧结论。
+func TestSelfcheckOfflineNotMissingNotCached(t *testing.T) {
+	sc := NewSelfchecker()
+	res := sc.Check(context.Background(), nil, SelfcheckOptions{
+		Server: "srv", TTL: time.Minute,
+		Expected: Catalog{Server: "srv", Tools: []string{"read", "write"}},
+	})
+	if res.Reachable {
+		t.Fatal("离线应判不可达")
+	}
+	for _, tc := range res.Tools {
+		if tc.Status != ToolUnreachable {
+			t.Fatalf("离线工具应标 unreachable（非 missing）: %s=%s", tc.Tool, tc.Status)
+		}
+	}
+	// 离线结果不入缓存：随后在线自检必须真探
+	cli := &scriptedClient{tools: []string{"read"}}
+	online := sc.Check(context.Background(), cli, SelfcheckOptions{Server: "srv", TTL: time.Minute})
+	if online.Cached {
+		t.Fatal("在线自检不得命中离线期的 down 缓存")
+	}
+	if !online.Reachable || online.Cached {
+		t.Fatalf("在线自检应真实可达: %+v", online)
+	}
+}
+
+// 探活失败结论不入缓存（mcpkit#48）：一次瞬断被缓存 = 恢复不被感知。
+// 不可达结果（含列举失败）一律不落 TTL 缓存——失败后下一次必须真探。
+func TestSelfcheckFailureNotCached(t *testing.T) {
+	sc := NewSelfchecker()
+	now := time.Now()
+	sc.now = func() time.Time { return now }
+	bad := &scriptedClient{tools: []string{"read"}, listErr: errors.New("boom")}
+	res1 := sc.Check(context.Background(), bad, SelfcheckOptions{Server: "srv", TTL: time.Minute})
+	if res1.Reachable {
+		t.Fatal("列举失败应判不可达")
+	}
+	// 同一时刻再探：失败结论不得命中缓存（若缓存会直接返回 down）
+	good := &scriptedClient{tools: []string{"read"}}
+	res2 := sc.Check(context.Background(), good, SelfcheckOptions{Server: "srv", TTL: time.Minute})
+	if res2.Cached || !res2.Reachable {
+		t.Fatalf("恢复应被即时感知: cached=%v reachable=%v", res2.Cached, res2.Reachable)
+	}
+}

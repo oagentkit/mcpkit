@@ -23,6 +23,14 @@ func (w *errorAsObservation) Info(ctx context.Context) (*schema.ToolInfo, error)
 	return w.inner.Info(ctx)
 }
 
+// RawToolName 透传（oagentkit/mcpkit#46，理由同 selfHealTool）。
+func (w *errorAsObservation) RawToolName() string {
+	if rn, ok := w.inner.(RawNamer); ok {
+		return rn.RawToolName()
+	}
+	return ""
+}
+
 // OutputSchema 出参 schema 透传（v0.12.5 OutputSchemer 可选能力面）。
 func (w *errorAsObservation) OutputSchema() json.RawMessage {
 	if o, ok := w.inner.(OutputSchemer); ok {

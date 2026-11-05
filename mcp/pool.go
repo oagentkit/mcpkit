@@ -54,6 +54,10 @@ type ServerConfig struct {
 	// 当前进程透传；含 "=" 时按 KEY=VALUE 字面透传。未列出的变量一律不继承
 	// （基础集见 procx.ChildEnv），防止本进程密钥泄漏给外部 MCP server。
 	Env []string
+	// Dir stdio 子进程工作目录（空=继承本进程 cwd，oagentkit/mcpkit#51）。
+	// 有工作目录需求的 server 此前被迫 `sh -c 'cd %s && exec …'` 包装并自扛
+	// 全量 shell 转义（注入面）；设 Dir 则不经 shell 直 exec。
+	Dir string
 	// URL HTTP 传输（streamable http）。
 	URL string
 	// Headers HTTP 请求头（如 Bearer 鉴权）。
@@ -167,6 +171,11 @@ type Pool struct {
 	// "no elicitation handler configured" 错误（调用失败呈现，与不声明能力的服务端
 	// 行为一致）。池级单点——建连/自愈 redial/Initialize 能力声明共用。
 	ElicitationHandler client.ElicitationHandler
+	// OnWarn 装配期软告警回调（nil 安全；oagentkit/mcpkit#47）：ToolSpec 既无
+	// Allow 也无 AllowAll 时该 server 零工具授予（deny by default）——存量配置
+	// 升级后静默「能对话但无工具可调」。告警点名 server 与后果；与 OnError
+	// 同一串行化纪律。
+	OnWarn func(server, msg string)
 	// TextResult 工具调用结果剥壳（oagentkit/mcpkit#39）：true 时 InvokableRun
 	// 返回剥壳后的**文本内容**（UnwrapMCPText：content[].text 优先，回落
 	// structuredContent）而非完整 CallToolResult JSON 信封——宿主把返回值
@@ -177,7 +186,15 @@ type Pool struct {
 	// 池级装配开关（装配期置定，Tools() 之后改不追溯已装配工具）；isError
 	// 的 ToolResultError 上抛两档同型，不受本开关影响。
 	TextResult bool
+	// MaxConcurrentDials Tools 装配扇出的池级并发上限（oagentkit/mcpkit#49）：
+	// 扇出此前并发 = server 数——N 个 stdio server 同时拉起子进程即 fork 风暴
+	// （批量重装配/reload 场景资源尖刺无约束）。<=0 取 DefaultMaxConcurrentDials。
+	MaxConcurrentDials int
 }
+
+// DefaultMaxConcurrentDials 装配扇出缺省并发（保守值：stdio 子进程拉起是
+// 重操作，池级闸防 fork 风暴；per-server 建连另有 singleflight 收敛）。
+const DefaultMaxConcurrentDials = 4
 
 // connState 单 server 连接侧状态（自锁：不同 server 的调用互不阻塞）。
 type connState struct {
@@ -324,7 +341,14 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) (ToolsResult, error)
 	for i := range specs {
 		items[i] = fanoutItem{cfg: cfgs[i], spec: specs[i]}
 	}
-	perServer, ferr := fanout.Map(ctx, items, len(items), func(_ context.Context, it fanoutItem) ([]tool.BaseTool, error) {
+	dials := p.MaxConcurrentDials
+	if dials <= 0 {
+		dials = DefaultMaxConcurrentDials
+	}
+	if dials > len(items) {
+		dials = len(items)
+	}
+	perServer, ferr := fanout.Map(ctx, items, dials, func(_ context.Context, it fanoutItem) ([]tool.BaseTool, error) {
 		tools, err := p.toolsForSpec(ctx, it.cfg, it.spec)
 		if err == nil {
 			return tools, nil
@@ -471,6 +495,13 @@ func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec
 		p.notifyError(cfg.Name, err)
 		return nil, err
 	}
+	// 零授予软告警（oagentkit/mcpkit#47）：空 Allow 且未 AllowAll = 0 个工具
+	// 是**文档化语义**（deny by default），但存量配置升级后的静默 0 工具
+	// 排查方向完全不在配置面——装配期经 OnWarn 点名（grantAll 显式形态与
+	// 带白名单形态不告警）。
+	if len(spec.Allow) == 0 && !spec.grantsAll() {
+		p.notifyWarn(cfg.Name, "spec 既无 Allow 也未 AllowAll：该 server 授予 0 个工具（deny by default）；确认是本意请写 AllowAll: true")
+	}
 	tools := p.assembleTools(cfg, spec, cli, entries)
 	// Allow 白名单全部未命中（拼写错误等）：转换层静默返回空表——经 OnError
 	// 告警并记入 Failed，避免 agent 拿到空工具表却无从排查
@@ -520,6 +551,16 @@ func (p *Pool) wrapSelfHeal(ctx context.Context, cfg ServerConfig, spec ToolSpec
 		out = append(out, w)
 	}
 	return out
+}
+
+// notifyWarn 串行化 OnWarn（与 OnError 同一并发纪律）。
+func (p *Pool) notifyWarn(server, msg string) {
+	if p.OnWarn == nil {
+		return
+	}
+	p.errMu.Lock()
+	defer p.errMu.Unlock()
+	p.OnWarn(server, msg)
 }
 
 // notifyError 串行化 OnError（Tools 跨 server 并行后回调不得被并发调用）。
@@ -766,6 +807,7 @@ func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.Clien
 		transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 			cmd := exec.CommandContext(context.WithoutCancel(ctx), command, args...)
 			cmd.Env = procx.ChildEnv(env)
+			cmd.Dir = cfg.Dir
 			return cmd, nil
 		}))
 	if err := t.Start(ctx); err != nil {
