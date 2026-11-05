@@ -2,6 +2,77 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.10.0] — 2026-11-05
+
+### 新增(mcp)：Pool.TextResult 装配开关——InvokableRun 可返回剥壳文本（#39）
+
+缺省保持 eino-ext toolHelper 同口径（完整 CallToolResult JSON 信封，宿主
+自行剥壳）；Pool.TextResult=true 时 InvokableRun 走本包单源剥壳器
+UnwrapMCPText（content[].text 优先、回落 structuredContent、无文本 payload
+给紧凑占位）直接返回文本内容——宿主按 tool.Tool 文本惯例直喂 LLM/前端的
+多数场景不再需要跨仓维护剥壳配对（bianque files 面板 500 的根因）。
+isError 的 ToolResultError 两档同型（payload 恒为信封 JSON），observe 层
+契约不受影响。
+Co-authored-by: Murphy-Yi <zhangyi@Murphy-YideMac-Mini.local>
+
+- 杂务(deps)：依赖地板追到最新——github.com/oagentkit/runtime v0.7.3
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oagentkit/runtime` | `v0.7.2` | `v0.7.3` |
+| `github.com/oekit/concurrency` | `v0.23.3` | `v0.24.0` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+
+## [v0.9.1] — 2026-11-04
+
+### 重构(mcp)：Tools 扇出收编 fanout.Map、闲置回收收编 loop.Run
+
+Tools 手搓 wg+mutex 扇出改 fanout.Map（项内 panic 旧版被 GoSafe 静默吞掉——
+该 server 工具不进 Tools 也不进 Failed，现显式入 Failed 并补发 OnError）；
+oauth/取消分类项内打标按失败当时 ctx 判定、汇总侧 errors.As 拆包，ctx 已凉时
+未起跑项的裸 ctx 错误同归取消桶。StartIdleReaper 改 loop.Run（单轮 panic
+收编循环存活——修复回收协程静默死亡；挂 baseCtx，reapStop 通道退役为
+reaping bool）。deps：oekit/concurrency v0.23.3
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.23.2
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/concurrency` | `v0.23.1` | `v0.23.2` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.23.1
+
+oekit 基座又发了一版（`concurrency` v0.23.1，2026-10-29 02:19 CST）⇒ 上一轮抬到
+v0.23.0 的地板已经落后 ⇒ 再抬一格。
+本仓只用到 `concurrency` 的少量 API ⇒ 实测 go build / go vet / go test -race 全绿，
+**零行为差异**；go 指令未被顶起。
+只改 go.mod / go.sum ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.23.0
+
+oekit 基座发了新版本（pkg v0.31.0 / concurrency v0.23.0 / logx v0.8.0）⇒ 本仓的
+依赖地板落后 ⇒ 抬到最新，让**下一次发版**不再带出落后地板（打 tag 时刻的地板
+必须是当时的最新——`verify_tag_floor` / `release.py doctor` 都在查这条）。
+兼容性实测：本仓只用这些基座包的少量 API ⇒ go build / go vet / go test -race
+全绿，**零行为差异**；go 指令未被顶起（本仓的 go 地板不动）。
+
+
 ## [v0.9.0] — 2026-10-28
 
 ### 新增(mcp)：按 server + 名字取单个工具，工具归属结构化
