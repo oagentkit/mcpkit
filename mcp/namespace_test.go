@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"github.com/cloudwego/eino/schema"
 	"strings"
 	"testing"
 
@@ -124,4 +125,36 @@ func TestToolsWhitelistAcceptsBothForms(t *testing.T) {
 		}
 		p.Close()
 	}
+}
+
+// RawToolName 官方 API（mcpkit#46）：原始名经类型断言取（比字符串剥前缀
+// 可靠）；包装层（selfheal/observation）透传；RawToolNameOf 回落 Info().Name。
+func TestRawToolNameOf(t *testing.T) {
+	// convTool 产出的 invokableTool：暴露名带命名空间、RawName 是原始名
+	tset := NewCatalog("ask-ops", []string{"run_x"})
+	_ = tset
+	// 直接构造 invokableTool（包内测试可见）
+	it := &invokableTool{wireName: "run_x", info: &schema.ToolInfo{Name: "ask-ops.run_x"}}
+	if got := RawToolNameOf(it); got != "run_x" {
+		t.Fatalf("RawToolNameOf = %q, want run_x", got)
+	}
+	// 包装层透传
+	w := WrapErrorAsObservation([]tool.BaseTool{it})[0]
+	if got := RawToolNameOf(w); got != "run_x" {
+		t.Fatalf("包装层应透传 RawToolName: %q", got)
+	}
+	// 无实现回落 Info().Name
+	stub := rawStubTool{}
+	if got := RawToolNameOf(stub); got != "stub.name" {
+		t.Fatalf("无 RawNamer 应回落暴露名: %q", got)
+	}
+}
+
+type rawStubTool struct{}
+
+func (rawStubTool) Info(context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{Name: "stub.name"}, nil
+}
+func (rawStubTool) InvokableRun(context.Context, string, ...tool.Option) (string, error) {
+	return "", nil
 }

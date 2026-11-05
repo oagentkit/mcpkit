@@ -18,7 +18,10 @@ type SelfcheckOptions struct {
 	Server string
 	// Timeout 单次探测的超时预算（默认 10s）。
 	Timeout time.Duration
-	// TTL 目录缓存有效期（默认 30s）。<= 0 表示不缓存（每次都实拉）。
+	// TTL 目录缓存有效期（建议显式传 DefaultSelfcheckTTL=30s）。<= 0 表示
+	// 不缓存（每次都实拉）——实现与本文档一致（oagentkit/mcpkit#45：此前
+	// 0 被重映射成默认 30s，巡检方按文档传 0 拿到 Cached=true 陈旧结论）。
+	// 不可达结论永不入缓存（恢复即时可见，oagentkit/mcpkit#44/#48）。
 	//
 	// 为什么需要缓存：自检是「高频拉目录」的动作，而 MCP 侧的工具目录
 	// 在连接生命周期内视为静态（见 catalog.go）。没有 TTL 时，每次探活
@@ -153,8 +156,12 @@ func (s *Selfchecker) Check(ctx context.Context, cli client.MCPClient, opts Self
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultSelfcheckTimeout
 	}
-	if opts.TTL == 0 {
-		opts.TTL = DefaultSelfcheckTTL
+	// TTL 语义与字段 doc/CLI help 对齐（oagentkit/mcpkit#45）：<= 0 表示
+	// 不缓存（每次都实拉）。零值不再重映射为 DefaultSelfcheckTTL——
+	// 此前「TTL=0 文档承诺不缓存、实现给 30s」，巡检方按文档传 0 拿到的是
+	// Cached=true 的陈旧结论。要默认缓存请显式传 DefaultSelfcheckTTL。
+	if opts.TTL < 0 {
+		opts.TTL = 0
 	}
 	now := s.now
 	if now == nil {
@@ -175,7 +182,10 @@ func (s *Selfchecker) Check(ctx context.Context, cli client.MCPClient, opts Self
 
 	res := s.probe(ctx, cli, opts)
 	res.At = now()
-	if opts.TTL > 0 {
+	// 不可达结论不入 TTL 缓存（oagentkit/mcpkit#44 同源）：一次瞬断被缓存
+	// 30s = 恢复不被感知、在线自检命中 down 陈旧结论。目录（reachable 时）
+	// 才享受 TTL 静态假设。
+	if opts.TTL > 0 && res.Reachable {
 		s.mu.Lock()
 		if s.cache == nil {
 			s.cache = map[string]selfcheckEntry{}
@@ -192,12 +202,15 @@ func (s *Selfchecker) probe(ctx context.Context, cli client.MCPClient, opts Self
 	res.Expected = opts.Expected
 
 	if cli == nil {
-		// 离线模式：无 client 可用，只做声明面核（期望工具全部标 missing，
-		// 因为无从知道 server 实际有什么）。
+		// 离线模式：无 client 可用，声明面工具标 unreachable——与在线不可达
+		// 路径（markAllUnknown）同语义，兑现「server 不可达 ≠ 工具缺失」的
+		// 不变量与 Check doc「只做声明面 vs 已有目录的核」（oagentkit/mcpkit#44）：
+		// 此前标 missing（契约故障）且结果按默认 TTL 入缓存——30s 内同 server
+		// 的在线自检命中 down 陈旧结论，把依赖故障放大成契约故障。
 		res.Reachable = false
 		res.Kind = KindUnreachable
 		res.Err = fmt.Errorf("mcp: 自检未提供 client（离线模式）")
-		res.Tools = markAllMissing(opts.Expected.Tools, res.Err)
+		res.Tools = markAllUnknown(opts.Expected.Tools, res.Err)
 		res.Diff = Diff(opts.Expected, res.Catalog)
 		return res
 	}

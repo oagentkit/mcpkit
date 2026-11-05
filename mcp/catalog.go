@@ -211,6 +211,29 @@ func (m *invokableTool) callName() string {
 	return m.wireName
 }
 
+// RawToolName 原始工具名（oagentkit/mcpkit#46）：暴露名带 server 命名空间是
+// 给模型看的；按名做判定的消费方（动词启发式/只读白名单/审计归类）要的是
+// 原始名——此前它只在包内流通，消费方拿到暴露名即静默漏判，各自实现一遍
+// 剥前缀且各自漏。经 tool.BaseTool 类型断言本接口取原始名（比字符串剥前缀
+// 可靠——server 名含 "." 时字符串剥离有歧义）。
+type RawNamer interface {
+	RawToolName() string
+}
+
+func (m *invokableTool) RawToolName() string { return m.callName() }
+
+// RawToolNameOf 取工具的原始名：实现 RawNamer 的（本包装配的）直取；否则
+// 回落 Info().Name（测试桩/外部实现——此时暴露名即所能给出的最好值）。
+func RawToolNameOf(t tool.BaseTool) string {
+	if rn, ok := t.(RawNamer); ok {
+		return rn.RawToolName()
+	}
+	if info, err := t.Info(context.Background()); err == nil && info != nil {
+		return info.Name
+	}
+	return ""
+}
+
 // OutputSchema 可选能力接口（schema.go OutputSchemer）。
 func (m *invokableTool) OutputSchema() json.RawMessage { return m.outputSchema }
 
@@ -283,9 +306,13 @@ func (p *Pool) catalogFor(ctx context.Context, cfg ServerConfig, cli client.MCPC
 		st.mu.Unlock()
 		return entries, nil
 	}
+	// tr/protoVersion 快照在临界区内读（oagentkit/mcpkit#43，-race 实测）：
+	// 与 registerConn 的写入构成 data race——G1 缓存未命中进 catalogFor、
+	// G2 自愈 evict + 重新 dial 走 registerConn 写同字段，无锁读并发。
+	tr, protoVersion := st.tr, st.protoVersion
 	st.mu.Unlock()
 
-	entries, err := listTools(ctx, cli, st.tr, st.protoVersion, cfg.timeoutOr(DefaultTimeout))
+	entries, err := listTools(ctx, cli, tr, protoVersion, cfg.timeoutOr(DefaultTimeout))
 	if err != nil {
 		if ctx.Err() != nil {
 			// 调用方 ctx 取消 ≠ 连接死亡：健康连接不得摘除（与 dial 的

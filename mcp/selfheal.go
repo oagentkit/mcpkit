@@ -16,6 +16,7 @@ import (
 	"io"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"os"
 	"strings"
 
@@ -25,6 +26,11 @@ import (
 
 // isTransportDead 传输层死亡类错误判定（自愈可救）：连接关闭/未连接/管道断裂类；
 // 业务类错误（MCP isError:true 已被 errorAsObservation 转观察）不在此列。
+//
+// 判定面层次（oagentkit/mcpkit#50）：结构化优先——mcp-go 的
+// transport.ErrTransportClosed 走 errors.Is；文本 marker 是兜底（mcp-go 多数
+// 断连路径仍只有文案）。⚠️ 已知边界：非英文环境/自定义措辞/驱动特有用语的
+// 断连判不出来 = 不自愈——上游暴露更多结构化错误前，这是文案兜底的天花板。
 func isTransportDead(err error) bool {
 	if err == nil {
 		return false
@@ -32,14 +38,15 @@ func isTransportDead(err error) bool {
 	if _, ok := asToolResultError(err); ok {
 		return false // 业务失败（isError:true）不可自愈
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) {
+	if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, transport.ErrTransportClosed) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
 	for _, marker := range []string{
 		"not connected", "connection closed", "connection refused",
 		"broken pipe", "transport closed", "client is not initialized",
-		"use of closed network connection",
+		"use of closed network connection", "use of closed",
+		"connection reset by peer",
 	} {
 		if strings.Contains(msg, marker) {
 			return true
@@ -58,6 +65,15 @@ type selfHealTool struct {
 
 func (t *selfHealTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return t.inner.Info(ctx)
+}
+
+// RawToolName 透传（oagentkit/mcpkit#46）：按名判定的消费方拿到的最外层工具
+// 通常是自愈包装——不透传的话类型断言断到外层就断了。
+func (t *selfHealTool) RawToolName() string {
+	if rn, ok := t.inner.(RawNamer); ok {
+		return rn.RawToolName()
+	}
+	return ""
 }
 
 // OutputSchema 动态透传：redial 换 inner 后 schema 随新工具走（server 侧可热改声明）。
