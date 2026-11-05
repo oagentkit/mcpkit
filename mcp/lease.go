@@ -9,8 +9,12 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/oekit/concurrency/loop"
@@ -60,8 +64,16 @@ func (p *Pool) PingServer(ctx context.Context, name string) error {
 	defer cancel()
 	var err error
 	if isModern {
-		// 现代协议：ping 是 no-op，用 tools/list 作真实探活
-		_, err = cli.ListTools(cctx, mcp.ListToolsRequest{})
+		// 现代协议：ping 是 no-op，用 tools/list 作真实探活。**结果不丢弃**
+		//（oagentkit/mcpkit#53）：探活周期 < maxIdle 时连接永不被回收、
+		// catalogFor 缓存优先 ⇒ server 工具面/schema 变化永久不可见（与
+		// ReapIdle 的「目录须随失效重列」理由矛盾）。探活成功路径比对目录
+		// 指纹，变化即失效缓存（下次 catalogFor 重列全量转换）。
+		var res *mcp.ListToolsResult
+		res, err = cli.ListTools(cctx, mcp.ListToolsRequest{})
+		if err == nil {
+			p.refreshCatalogIfChanged(name, res.Tools)
+		}
 	} else {
 		err = cli.Ping(cctx)
 	}
@@ -78,6 +90,49 @@ func (p *Pool) PingServer(ctx context.Context, name string) error {
 	}
 	p.touch(name)
 	return nil
+}
+
+// refreshCatalogIfChanged 探活侧目录缓存一致性（oagentkit/mcpkit#53）：
+// 比对线上工具面指纹（数量+名集+schema 摘要）与缓存目录，变化即失效缓存
+// ——下次 catalogFor 走全量列举（含 rawInput 双无损转换），server 工具面
+// 变化在探活节奏内可见，不依赖闲置回收兜底。
+func (p *Pool) refreshCatalogIfChanged(name string, tools []mcp.Tool) {
+	st := p.connLockedOrNil(name)
+	if st == nil {
+		return
+	}
+	fp := probeFingerprint(tools)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.catalog == nil {
+		return // 本就没有缓存，无须动作
+	}
+	if probeFingerprintOfEntries(st.catalog) != fp {
+		st.catalog = nil
+	}
+}
+
+// probeFingerprint 数量 + 名集 + schema 摘要（探活节奏的廉价一致性判据；
+// 描述文本不参与——只有工具面/schema 变化才要求缓存失效）。
+func probeFingerprint(tools []mcp.Tool) string {
+	names := make([]string, len(tools))
+	schemas := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+		b, _ := json.Marshal(t.InputSchema)
+		schemas[i] = string(b)
+	}
+	sort.Strings(names)
+	sort.Strings(schemas)
+	return strconv.Itoa(len(tools)) + "|" + strings.Join(names, ",") + "|" + strings.Join(schemas, ",")
+}
+
+func probeFingerprintOfEntries(entries []toolEntry) string {
+	tools := make([]mcp.Tool, len(entries))
+	for i, e := range entries {
+		tools[i] = e.tool
+	}
+	return probeFingerprint(tools)
 }
 
 // ReapIdle 关闭闲置超过 maxIdle 的缓存连接，返回回收数。闲置时钟 = 最近一次

@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
 	"syscall"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -64,13 +67,18 @@ func (k ErrorKind) MarshalJSON() ([]byte, error) {
 	return json.Marshal(k.String())
 }
 
-// UnmarshalJSON 支持从分类名反解。
+// UnmarshalJSON 支持从分类名反解。未知名串 fail-fast（oagentkit/mcpkit#54）：
+// 此前静默归 KindUnknown——监控/告警配置里的 typo（"unreachble"）零可见性地
+// 降级为 unknown（=不可重试），与序列化侧「监控不该看到裸 int」的用心不对称。
+// 空串是 kindString(KindUnknown) 的序列化产物，合法回环。
 func (k *ErrorKind) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
 	switch s {
+	case "unknown":
+		*k = KindUnknown
 	case "unreachable":
 		*k = KindUnreachable
 	case "protocol":
@@ -80,7 +88,7 @@ func (k *ErrorKind) UnmarshalJSON(data []byte) error {
 	case "invalid_args":
 		*k = KindInvalidArgs
 	default:
-		*k = KindUnknown
+		return fmt.Errorf("errclass: 未知错误分类名 %q（typo 会在监控配置里静默降级，故 fail-fast）", s)
 	}
 	return nil
 }
@@ -191,7 +199,10 @@ func isUnreachable(err error) bool {
 	if errors.As(err, &ne) {
 		return true
 	}
-	// 系统层：连接被拒 / 主机不可达 / 管道破裂
+	// 系统层：连接被拒 / 主机不可达 / 管道破裂；io.EOF（stdio server 死亡的
+	// 经典形态 = stdout 读到裸 EOF，此前落 KindUnknown 不重试不自愈——
+	// mcpkit#52「最常见故障在分类盲区」）；transport.ErrTransportClosed（
+	// mcp-go 类型化断连，selfheal 面同源）
 	for _, target := range []error{
 		os.ErrNotExist,
 		syscall.ECONNREFUSED,
@@ -199,6 +210,8 @@ func isUnreachable(err error) bool {
 		syscall.EHOSTUNREACH,
 		syscall.ENETUNREACH,
 		syscall.EPIPE,
+		io.EOF,
+		transport.ErrTransportClosed,
 	} {
 		if errors.Is(err, target) {
 			return true
