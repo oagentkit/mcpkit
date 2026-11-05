@@ -29,6 +29,7 @@ oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落�
 本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
 与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
 只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+Co-authored-by: Murphy-Yi <zhangyi@Murphy-YideMac-Mini.local>
 
 
 ## [v0.9.1] — 2026-11-04
