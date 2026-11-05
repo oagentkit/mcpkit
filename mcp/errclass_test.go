@@ -57,7 +57,8 @@ func TestProbeFingerprintChanges(t *testing.T) {
 	if probeFingerprint(t1) == probeFingerprint(t2) {
 		t.Fatal("不同工具面指纹应不同")
 	}
-	if probeFingerprint(t1) != probeFingerprint(t1) {
+	t1b := []mcp.Tool{{Name: "a"}} // 同构独立切片：指纹恒等且非同一表达式
+	if probeFingerprint(t1) != probeFingerprint(t1b) {
 		t.Fatal("同工具面指纹应恒等")
 	}
 	// schema 变化也要触发（描述不参与，InputSchema 参与）
