@@ -2,6 +2,59 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.12.0] — 2026-11-07
+
+### 修复(mcp)：六修——竞态收尾/自愈回写/生命周期 API/披露门禁契约/请求 ID 单源/探活指纹单源（#61-#66）
+
+## 概览
+六修一 PR：并发数据竞争收尾（#61）、自愈回写（#62）、生命周期 API（#63）、渐进披露模型面契约（#64）、request-ID 单源（#65）、探活指纹单源（#66）。每 issue 一个 commit，根因与修法写在各自 commit body。
+close #61
+close #62
+close #63
+close #64
+close #65
+close #66
+---
+### #61 catalogFor 无锁读 st.tr/st.protoVersion 数据竞争
+**根因**：catalogFor 对 `st.tr`/`st.protoVersion` 的无锁读（v0.10.0 形态：临界区外读）与 registerConn 的 st.mu 内写构成数据竞争。该读写本身已在前轮 #55（mcpkit#43）移入临界区快照修复；本轮收尾两个遗留缺口。
+**修法**：① `detachLocked`（evict/ReapIdle/Close 三处同构的摘除单源）清空 `tr`/`protoVersion`——句柄与连接同生命周期，残留旧值会让 evict 后、重注册前的 catalogFor 快照到已死 transport；② 补 `-race` 回归测试 `TestCatalogForTransportSnapshotRace`（G1 反复装配快照 tr、G2 反复摘连接触发 registerConn 写入；已实测验证：临时还原 v0.10.0 无锁读形态，race detector 立即命中，修复态全绿）。
+### #62 自愈 redial 后不回写 selfHealTool.inner
+**根因**：`selfHealTool.InvokableRun` 自愈成功后直接返回 fresh 的结果、从不替换 `t.inner`——注释宣称「redial 换 inner 后 schema 随新工具走」但实现为空。此后每次调用都先撞一次死连接再 redial，失败调用与目录装配按调用次数线性放大。
+**修法**：重试成功后在互斥下回写 `t.inner = fresh`（重试失败不回写，不进半换装状态）；Info/RawToolName/OutputSchema 的 inner 读取同入锁。回归测试断言首调自愈后死工具/redial 计数冻结、后续调用直达新工具。
+### #63 Pool 缺 Close/Drain 生命周期 API
+**根因**：Pool 只有全量 Close 与闲置回收，无按 server 断连与停机收口——治理热换装时旧 MCP 连接无断连路径，只能漏着等闲置回收（回收时机依赖对端空闲行为，不受本方控制；bianque 注释实证）。
+**修法**：新增 `Pool.CloseServer(name)`（按 server 确定性断连：detach+Close 连带目录失效、幂等、下次调用透明重建、在途不等待）与 `Pool.Drain(timeout)`（三步语义写死：拒新取连 → 等在飞收尾（上限 timeout，超时硬断）→ 断全部连接；teardown 与 Close 单源复用）；热替换语义文档化在 Pool godoc（持有旧池工具引用走 Drain，否则 Close）。issue 提及的 llm 装饰链同病不在本仓范围，留待对应仓。
+### #64 渐进披露缺模型面门禁契约
+**根因**：渐进披露只有 server 面（Catalog：工具存在性），模型面三态语义（存在未披露→激活可重试 / 不存在→终止）与 Guidance 文案只活在 agent-harness 手搓 Gate 里，跨宿主必然漂移。
+**修法**：新契约面 `disclose.go`——`DisclosureGate`（Catalog + loaded 集 + 可选激活器）判定三态 `DisclosureState`（Allowed / RetryableDenied / TerminalDenied），拒时顺手激活（成功入已披露集，「重试必成」闭环）、`DisclosureGuidance` 库内置模型面文案可覆写；godoc 把三态语义与「处置层按 State 分流、勿解析文案」写死。选项 `XxxOption` 命名纪律，并发安全。
+### #65 raw 通道与类型化 client 的 request-ID 重号
+**根因**：raw 目录通道（包级全局计数器）与 mcp-go 类型化 client（per-client 计数器）共用同一条 transport，两套稠密小整数计数器互不知晓、必然重号；stdio 按 ID 键路由响应（同号在途静默覆盖、无匹配静默丢弃）→ 响应串台 + 调用挂死 + 目录被毒成空表。
+**修法**：request-ID 单一来源——建连单点（dialStdio/dialHTTP）把 transport 包进 `sharedIDTransport`，该连接上**所有**出站请求（typed 与 raw）的 wire ID 从同一原子计数器取号（请求侧改号、响应侧还原调用方 ID，SendRequest 同步返回对调用方无感）；BidirectionalInterface/HTTPConnection/RequiresLegacyProtocol 可选能力面全转发，协商与带外行为不变；`rawReqID` 全局计数器退役。回归测试两层：单元面（32 路并发同号调用方 ID → wire ID 互异）+ 端到端（脚本化 stdio 子进程延迟应答制造双请求在途窗口，raw tools/list 与 typed tools/call 并发 10 轮双向防串台；回归态实测必红）。
+### #66 探活指纹两侧不同源（#53 引入的回归）
+**根因**：raw 通道目录条目的 `tool.InputSchema` 恒零值（schema 只存 rawInput），探活指纹按 `json.Marshal(t.InputSchema)` 摘要——零值（`type:""`）与 typed 通道真实 schema（`type:"object"`+properties）永不相等，现代协议 server 每次 PingServer 都误判工具面变了 → 清 catalog → 探活周期驱动的 tools/list 风暴，「连接时一次列举」不变量被打破。
+**修法**：指纹单源化——`parseRawToolsList` 以 typed Unmarshal 尽力回填 `tool.InputSchema`（同一份 wire JSON 双通道各自 Unmarshal 进同一结构，指纹必相等；失败与类型化同败同形）；`rawInput` 原文保留（anyOf 无损面不受影响），指纹锚类型化可见面（探活侧同口径）；「探活」不变成「重新拉目录」，基准仍是会话内已见目录。回归测试（探针同款）：跨双通道同工具面指纹必相等 + 同面不清缓存/真变仍清。
+---
+## 测试
+- `gofmt -l .` 空、`go vet ./...`、`go build ./...` 全绿
+- `go test -race ./...` 全绿（mcp 包覆盖率 83.6%）
+- 数据竞争修复（#61/#65）均带 `-race` 回归测试，且已用「临时还原回归态实测必红」验证测试有牙
+
+- 杂务(deps)：依赖地板追到最新——github.com/oagentkit/runtime v0.11.0
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oagentkit/runtime` | `v0.8.0` | `v0.11.0` |
+| `github.com/oekit/concurrency` | `v0.25.1` | `v0.27.0` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+
 ## [v0.11.0] — 2026-11-06
 
 ### 修复(mcp)：EOF 分类盲区 + 探活刷新目录缓存 + ErrorKind 反解 fail-fast
