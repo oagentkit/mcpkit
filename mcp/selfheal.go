@@ -19,6 +19,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
@@ -58,19 +59,39 @@ func isTransportDead(err error) bool {
 // selfHealTool 调用期自愈包装：传输层死亡时经 redial 重连并解析同名工具重试一次。
 // redial 由 Pool 提供闭包（摘死连接→重连→GetTools→同名解析），包装层不感知池内部。
 type selfHealTool struct {
-	name   string // 工具名（重连后按名解析同名工具）
+	name string // 工具名（重连后按名解析同名工具）
+	// mu 护 inner：自愈成功后的回写与各读取路径并发安全（oagentkit/mcpkit#62）
+	// ——同一工具对象可被多 goroutine 并发调用，inner 替换不得裸写。
+	mu     sync.Mutex
 	inner  tool.InvokableTool
 	redial func(ctx context.Context) (tool.InvokableTool, error)
 }
 
+// swapInner 自愈成功后替换 inner（oagentkit/mcpkit#62）：此前注释称「redial 换
+// inner 后 schema 随新工具走」但实现从不替换——此后每次调用都先撞一次死连接
+// （一轮注定失败的调用 + 一次 redial + 一次目录装配）再重试。长会话里同一工具
+// 被反复调用时失败调用按调用次数线性放大。
+func (t *selfHealTool) swapInner(fresh tool.InvokableTool) {
+	t.mu.Lock()
+	t.inner = fresh
+	t.mu.Unlock()
+}
+
+// currentInner 锁内取当前 inner。
+func (t *selfHealTool) currentInner() tool.InvokableTool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.inner
+}
+
 func (t *selfHealTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
-	return t.inner.Info(ctx)
+	return t.currentInner().Info(ctx)
 }
 
 // RawToolName 透传（oagentkit/mcpkit#46）：按名判定的消费方拿到的最外层工具
 // 通常是自愈包装——不透传的话类型断言断到外层就断了。
 func (t *selfHealTool) RawToolName() string {
-	if rn, ok := t.inner.(RawNamer); ok {
+	if rn, ok := t.currentInner().(RawNamer); ok {
 		return rn.RawToolName()
 	}
 	return ""
@@ -78,14 +99,14 @@ func (t *selfHealTool) RawToolName() string {
 
 // OutputSchema 动态透传：redial 换 inner 后 schema 随新工具走（server 侧可热改声明）。
 func (t *selfHealTool) OutputSchema() json.RawMessage {
-	if o, ok := t.inner.(OutputSchemer); ok {
+	if o, ok := t.currentInner().(OutputSchemer); ok {
 		return o.OutputSchema()
 	}
 	return nil
 }
 
 func (t *selfHealTool) InvokableRun(ctx context.Context, args string, opts ...tool.Option) (string, error) {
-	out, err := t.inner.InvokableRun(ctx, args, opts...)
+	out, err := t.currentInner().InvokableRun(ctx, args, opts...)
 	if err == nil || !isTransportDead(err) {
 		return out, err
 	}
@@ -99,6 +120,9 @@ func (t *selfHealTool) InvokableRun(ctx context.Context, args string, opts ...to
 	if err2 != nil {
 		return "", fmt.Errorf("mcp: %s 自愈重试仍失败: %w（原始错误: %v）", t.name, err2, err)
 	}
+	// 重试成功才回写：失败的新工具不进 inner（下次调用仍从旧 inner 触发自愈，
+	// 拿到最新的失败语义而非半换装状态）。
+	t.swapInner(fresh)
 	return out2, nil
 }
 
