@@ -96,3 +96,81 @@ func TestSelfHealRedialFailureSurfaces(t *testing.T) {
 		t.Fatalf("重连失败应上抛: %v", err)
 	}
 }
+
+// countingDeadTool 恒死的工具：统计被调用次数（#62 回归锚点——自愈成功后
+// 不回写 inner 时，此后每次调用都会先撞一次这个死工具）。
+type countingDeadTool struct {
+	name  string
+	calls int
+}
+
+func (t *countingDeadTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{Name: t.name}, nil
+}
+
+func (t *countingDeadTool) InvokableRun(_ context.Context, _ string, _ ...tool.Option) (string, error) {
+	t.calls++
+	return "", errors.New("not connected") // 恒死：传输层错误
+}
+
+// TestSelfHealSwapsInnerAfterRedial 回归（oagentkit/mcpkit#62）：自愈成功后必须
+// 回写 inner——此前实现从不替换，此后每次调用都先撞一次死连接（多一轮注定失败
+// 的调用 + 一次 redial + 一次目录装配）再重试。断言：首调自愈成功后，后续调用
+// 直达新工具，死工具调用计数不再增长。
+func TestSelfHealSwapsInnerAfterRedial(t *testing.T) {
+	dead := &countingDeadTool{name: "calc"}
+	// fresh 恒成功：脚本给足 nil（首调重试 1 次 + 后续直达 3 次）
+	fresh := &scriptedTool{name: "calc", calls: []error{nil, nil, nil, nil}}
+	redials := 0
+	sut := &selfHealTool{name: "calc", inner: dead, redial: func(context.Context) (tool.InvokableTool, error) {
+		redials++
+		return fresh, nil
+	}}
+
+	// 首调：撞死连接 → redial → fresh 重试成功（dead.calls=1, redials=1）
+	out, err := sut.InvokableRun(context.Background(), "{}")
+	if err != nil || out != "ok" {
+		t.Fatalf("首调自愈应成功: out=%q err=%v", out, err)
+	}
+	// 后续多次调用：全部直达 fresh——死连接不再被撞、不再 redial
+	for i := 0; i < 3; i++ {
+		out, err := sut.InvokableRun(context.Background(), "{}")
+		if err != nil || out != "ok" {
+			t.Fatalf("第 %d 次调用应直达新工具: out=%q err=%v", i+2, out, err)
+		}
+	}
+	if dead.calls != 1 {
+		t.Fatalf("自愈成功后死工具不应再被调用，实际调用 %d 次", dead.calls)
+	}
+	if redials != 1 {
+		t.Fatalf("自愈成功后不应再 redial，实际 %d 次", redials)
+	}
+	// 回写后读取面随新工具走：Info 直达 fresh
+	info, err := sut.Info(context.Background())
+	if err != nil || info.Name != "calc" {
+		t.Fatalf("回写后 Info 异常: %+v %v", info, err)
+	}
+}
+
+// TestSelfHealKeepsOldInnerWhenRetryFails 重试失败不回写：下次调用仍从旧 inner
+// 触发自愈（半换装状态不得进入 inner）。
+func TestSelfHealKeepsOldInnerWhenRetryFails(t *testing.T) {
+	dead := &countingDeadTool{name: "calc"}
+	alsoDead := &countingDeadTool{name: "calc"} // redial 出的新工具也死
+	sut := &selfHealTool{name: "calc", inner: dead, redial: func(context.Context) (tool.InvokableTool, error) {
+		return alsoDead, nil
+	}}
+	if _, err := sut.InvokableRun(context.Background(), "{}"); err == nil {
+		t.Fatal("重试仍失败应上抛")
+	}
+	if alsoDead.calls != 1 {
+		t.Fatalf("新工具应被重试一次，实际 %d 次", alsoDead.calls)
+	}
+	// 再调一次：inner 仍是 dead（未回写），触发新一轮自愈
+	if _, err := sut.InvokableRun(context.Background(), "{}"); err == nil {
+		t.Fatal("第二轮仍应失败")
+	}
+	if dead.calls != 2 || alsoDead.calls != 2 {
+		t.Fatalf("未回写时应各调用: dead=%d alsoDead=%d", dead.calls, alsoDead.calls)
+	}
+}

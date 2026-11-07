@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/mark3labs/mcp-go/client"
@@ -207,5 +209,53 @@ func TestTextResultUnwrap(t *testing.T) {
 	injectClient(t, p, "srv", mustInProcessClient(t, srv))
 	if got := run(p); got != "hello world" {
 		t.Fatalf("TextResult 应返回剥壳文本，得 %q", got)
+	}
+}
+
+// TestCatalogForTransportSnapshotRace -race 回归（oagentkit/mcpkit#61）：
+// catalogFor 对 st.tr/st.protoVersion 的读取必须在 st.mu 临界区内快照——
+// 写方 registerConn 持 st.mu 写同字段（自愈 evict + 重新 dial 窗口），读方若在
+// 临界区外读（v0.10.0 形态）即构成数据竞争。G1 反复装配（缓存未命中 → 快照 tr
+// 走 raw 通道列举）；G2 反复摘连接（触发 G1 侧重 dial → registerConn 写入）。
+// 回归态（读移出临界区）在 -race 下必红。
+func TestCatalogForTransportSnapshotRace(t *testing.T) {
+	ts := rawFidelityServer(t)
+	p := NewPool(ServerConfig{Name: "srv", URL: ts.URL + "/mcp", Timeout: 5 * time.Second})
+	defer p.Close()
+
+	const rounds = 20
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { // G1：装配循环——catalogFor 的快照读方
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			// 失败容忍：与 G2 的摘连接竞争时列举可失败（连接失效语义，非断言对象）
+			_, _ = p.Tools(context.Background(), []ToolSpec{{Server: "srv", AllowAll: true}})
+		}
+	}()
+	go func() { // G2：摘连接循环——模拟自愈 redial 的前半段；后半段（registerConn
+		// 写 st.tr）由 G1 的重 dial 完成，一读一写就此交错
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			if st := p.conn("srv"); st != nil {
+				st.mu.Lock()
+				cached := st.cli
+				st.mu.Unlock()
+				if cached != nil {
+					p.evict("srv", cached)
+				}
+			}
+			time.Sleep(time.Millisecond) // 让 G1 有机会进入列举窗口
+		}
+	}()
+	wg.Wait()
+
+	// 收尾断言：竞态轮过后池应仍可正常装配（连接/目录缓存未被竞态破坏）
+	res, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", AllowAll: true}})
+	if err != nil {
+		t.Fatalf("收尾 Tools 失败: %v", err)
+	}
+	if len(res.Tools) != 1 || res.Failed != nil {
+		t.Fatalf("收尾装配异常: tools=%d failed=%v", len(res.Tools), res.Failed)
 	}
 }

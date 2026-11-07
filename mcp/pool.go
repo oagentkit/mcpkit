@@ -135,6 +135,11 @@ func (s ToolSpec) grantsAll() bool {
 
 // Pool MCP 连接池：lazy 建连（首次 Tools 时）、连接缓存复用、Close 全量回收。
 // 闲置回收/探活租约面见 lease.go（ReapIdle/StartIdleReaper/PingServer）。
+//
+// 生命周期 API（oagentkit/mcpkit#63）：Close 全量断连（立即）；Drain 停机收口
+// （拒新→等在飞→断连）；CloseServer 按 server 断连（热换装旧连接的确定性
+// 处置路径——**热替换语义**：换装旧池时若仍持有其装配的工具引用走 Drain，
+// 否则 Close；闲置回收只是兜底，不是热换装的处置契约）。
 type Pool struct {
 	// mu 护生命周期与 per-server 状态表（closed/cfgs/conns/reaping）。
 	// 单 server 的连接/目录/闲置/在途拆到 connState 自锁——Tools 跨 server
@@ -763,11 +768,16 @@ func (p *Pool) evict(name string, cli client.MCPClient) {
 
 // detachLocked 摘除连接并连带失效目录/代际（evict/ReapIdle/Close 三处同构的
 // 失效逻辑单源；调用方须持 st.mu）。返回被摘下的连接供锁外 Close。
+// tr/protoVersion 一并清空（oagentkit/mcpkit#61）：句柄与连接同生命周期——
+// 残留旧值会让 evict 后、重新 registerConn 前的 catalogFor 快照到已死 transport
+// （必然失败的列举 + 多一次 evict 抖动）；清空后该窗口回落类型化通道语义。
 func (st *connState) detachLocked() client.MCPClient {
 	cli := st.cli
 	st.cli = nil
 	st.catalog = nil
 	st.modern = false
+	st.tr = nil
+	st.protoVersion = ""
 	return cli
 }
 
@@ -813,7 +823,11 @@ func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.Clien
 	if err := t.Start(ctx); err != nil {
 		return nil, nil, fmt.Errorf("mcp: server %s stdio 启动失败: %w", cfg.Name, err)
 	}
-	return client.NewClient(t, clientOpts...), t, nil
+	// 单源 request-ID 包装（oagentkit/mcpkit#65）：typed client 与 raw 目录通道
+	// 共用本 transport，wire ID 必须同源分配——登记的句柄即包装器（catalogFor
+	// 的 raw 通道经它取号）。
+	shared := &sharedIDTransport{Interface: t}
+	return client.NewClient(shared, clientOpts...), shared, nil
 }
 
 // dialHTTP streamable http 传输建连（可挂 OAuth）。
@@ -845,7 +859,9 @@ func (p *Pool) dialHTTP(ctx context.Context, cfg ServerConfig, clientOpts ...cli
 	if err != nil {
 		return nil, nil, fmt.Errorf("mcp: server %s http transport 构造失败: %w", cfg.Name, err)
 	}
-	return client.NewClient(tt, clientOpts...), tt, nil
+	// 单源 request-ID 包装（同 dialStdio）：typed/raw 双通道 wire ID 同源。
+	shared := &sharedIDTransport{Interface: tt}
+	return client.NewClient(shared, clientOpts...), shared, nil
 }
 
 // firstPositive 非零胜出（Timeout/RequestTimeout/ProbeTimeout 三处回退单源）。
@@ -887,6 +903,12 @@ func (p *Pool) Close() {
 	p.reaping = false
 	cancel := p.baseCancel
 	p.mu.Unlock()
+	p.teardown(cancel, states)
+}
+
+// teardown 断连收口（Close/Drain 共用；closed 已置位且状态已摘出，锁外执行）：
+// baseCtx 取消（连接生命周期 ctx + 带外请求通道终结）+ 逐 server 摘连接并 Close。
+func (p *Pool) teardown(cancel context.CancelFunc, states []*connState) {
 	if cancel != nil {
 		cancel() // 连接生命周期 ctx 收口（带外请求通道随连接关闭一并终结）
 	}
@@ -898,6 +920,86 @@ func (p *Pool) Close() {
 			_ = cli.Close()
 		}
 	}
+}
+
+// CloseServer 关闭指定 server 的缓存连接并连带失效其目录缓存（幂等；无该
+// server 或无连接时静默返回）。被关闭的 server 下次调用透明重建（lazy 建连，
+// 与 evict/闲置回收同形）。
+//
+// 这是治理热换装（包声明/池/配置热替换）时对旧连接的**确定性断连路径**
+// （oagentkit/mcpkit#63）：此前 mcpkit 无按 server 的断连 API，热换装后旧
+// MCP 连接只能漏着等闲置回收——回收时机依赖对端空闲行为，不受本方控制，
+// server 侧连接/租约资源在热治理路径上确定性泄漏。
+//
+// 与 ReapIdle 的分工：同构的 detach+Close，但 ReapIdle 是池自主决策（经
+// OnError 侧面观测），本方法是调用方显式发起（调用方自己知道关了谁，不发
+// OnError 免观测噪音）。
+//
+// 在途调用**不等待**：旧连接上的在途调用将收到传输层错误并由自愈层透明
+// 重建（拒绝服务的是连接，不是调用）。要「等在飞收尾再断」的停机语义走 Drain。
+func (p *Pool) CloseServer(name string) {
+	st := p.conn(name)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	cli := st.detachLocked()
+	st.mu.Unlock()
+	if cli != nil {
+		_ = cli.Close()
+	}
+}
+
+// Drain 停机收口（oagentkit/mcpkit#63）：**拒绝新取连 → 等在飞调用收尾 →
+// 断全部连接**。三步语义写死：
+//
+//  1. 立即置 closed——此后 Tools/client 一律报「池已关闭」，新连接/新目录
+//     装配/自愈 redial 全部 fail-fast（在飞调用不受此步影响，继续收尾）；
+//  2. 等待全部 server 的在途调用（leaseUse 登记）归零，上限 timeout
+//     （<= 0 = 不等待，立即进入断连）；超时则带着仍在飞的调用硬断——停机
+//     收口不得被单笔长调用无限阻塞；
+//  3. 断全部连接并停闲置回收（与 Close 同构收口：conns 摘除 + baseCtx 取消
+//     + 回收循环停止）。幂等：重复 Drain/Close 无副作用。
+//
+// 与 Close 的区别：Close 立即断连（在飞调用撞传输错误、由自愈重连——但池
+// 已关，重连失败）；Drain 给在飞调用一个优雅收尾窗口。热换装旧池时若调用
+// 方仍持有旧池装配的工具引用，用 Drain 让在飞调用自然完成后再断；若确定
+// 无在飞（或可容忍失败重试到新池），直接 Close 即可。
+func (p *Pool) Drain(timeout time.Duration) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return // 已收口（幂等；早先的 Drain/Close 已覆盖断连与停轮）
+	}
+	p.closed = true
+	states := make([]*connState, 0, len(p.conns))
+	for _, st := range p.conns {
+		states = append(states, st)
+	}
+	p.reaping = false
+	cancel := p.baseCancel
+	p.mu.Unlock()
+
+	if timeout > 0 {
+		deadline := time.Now().Add(timeout)
+		for {
+			busy := false
+			for _, st := range states {
+				st.mu.Lock()
+				n := st.inFlight
+				st.mu.Unlock()
+				if n > 0 {
+					busy = true
+					break
+				}
+			}
+			if !busy || !time.Now().Before(deadline) {
+				break
+			}
+			time.Sleep(2 * time.Millisecond) // 轮询粒度：停机路径，不追求事件驱动
+		}
+	}
+	p.teardown(cancel, states)
 }
 
 // expandServerEnv dial 期展开 ${VAR}（第十轮落地）：Headers 全量 + OAuth
