@@ -147,10 +147,23 @@ func parseRawToolsList(raw json.RawMessage) ([]toolEntry, error) {
 		} else {
 			h.Destructive = true
 		}
+		tool := mcp.Tool{Name: t.Name, Description: t.Description}
+		// inputSchema 缺席的 server（极老形态）回落空对象——与类型化通道零值同形
+		input := orEmptyObject(t.InputSchema)
+		// 指纹单源（oagentkit/mcpkit#66）：typed Unmarshal 尽力回填 InputSchema。
+		// 此前 raw 条目的 tool.InputSchema 恒零值（schema 只存 rawInput），而探活
+		// 指纹（probeFingerprint）按 json.Marshal(t.InputSchema) 摘要——零值序列化
+		// 与类型化反序列化的真实 schema 永不相等，现代协议 server 每次探活都
+		// 判「工具面变了」清 catalog（#53 修复自身引入的回归：探活周期驱动的
+		// tools/list 风暴 +「连接时一次列举」不变量被打破）。同一份 wire JSON
+		// 经两条通道各自 Unmarshal 进同一结构，序列化指纹必相等；Unmarshal 失败
+		// 置零值（与类型化通道同败同形）。rawInput 仍保留原文——anyOf 等类型化
+		// 表达不了的联合声明无损面（见文件头），指纹只锚类型化可见面（探活侧
+		// 也只见该面，同口径即相等）。
+		_ = json.Unmarshal(input, &tool.InputSchema)
 		entries = append(entries, toolEntry{
-			tool: mcp.Tool{Name: t.Name, Description: t.Description},
-			// inputSchema 缺席的 server（极老形态）回落空对象——与类型化通道零值同形
-			rawInput:     orEmptyObject(t.InputSchema),
+			tool:         tool,
+			rawInput:     input,
 			outputSchema: t.OutputSchema,
 			hints:        h,
 		})

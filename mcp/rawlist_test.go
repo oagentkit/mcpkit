@@ -136,3 +136,112 @@ func TestListToolsTypedFallback(t *testing.T) {
 		t.Error("typed 回退工具不应声明 OutputSchemer 能力")
 	}
 }
+
+// fingerprintServer 带**属性化入参 schema** 的 server（#66 探针形态：零值
+// InputSchema 与真实 schema 的指纹差异必须可辨——无属性工具两面同空，测不出
+// 回归）。
+func fingerprintServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := server.NewMCPServer("fp", "1.0.0")
+	srv.AddTool(mcp.NewTool("search",
+		mcp.WithDescription("fingerprint probe"),
+		mcp.WithString("q", mcp.Required()),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("ok"), nil
+	})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(srv))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// TestFingerprintCrossChannelEqual 回归（oagentkit/mcpkit#66，探针同款）：raw 通道
+// 目录与 typed ListTools 对**同一工具面**的指纹必相等——此前 raw 条目的
+// tool.InputSchema 恒零值（schema 只存 rawInput），零值序列化
+// （type:""）与 typed 真实 schema（type:"object"+properties）永不相等，现代协议
+// server 每次 PingServer 探活都误判「工具面变了」清 catalog。
+func TestFingerprintCrossChannelEqual(t *testing.T) {
+	ts := fingerprintServer(t)
+	cli, tr := dialFidelity(t, ts)
+
+	// raw 通道目录（生产建连恒走：catalogFor 快照 tr 后的线上列举）
+	raw, err := fetchRawToolsList(context.Background(), tr, cli.ProtocolVersion())
+	if err != nil {
+		t.Fatalf("raw fetch: %v", err)
+	}
+	entries, err := parseRawToolsList(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(entries) != 1 || entries[0].tool.Name != "search" {
+		t.Fatalf("raw 目录异常: %+v", entries)
+	}
+	// 回填断言：raw 条目的 InputSchema 非零值（type/properties 与 typed 同形）
+	if got := entries[0].tool.InputSchema.Type; got != "object" {
+		t.Fatalf("raw 条目 InputSchema 应回填 type=object，得 %q（零值即 #66 回归）", got)
+	}
+	if _, ok := entries[0].tool.InputSchema.Properties["q"]; !ok {
+		t.Fatalf("raw 条目 InputSchema 应回填 properties: %+v", entries[0].tool.InputSchema)
+	}
+
+	// typed 通道目录（探活路径 PingServer 的 ListTools 同款）
+	res, err := cli.ListTools(context.Background(), mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probeFingerprintOfEntries(entries) != probeFingerprint(res.Tools) {
+		t.Fatalf("同一工具面跨双通道指纹不等（探活会清目录）:\n raw=%s\n typed=%s",
+			probeFingerprintOfEntries(entries), probeFingerprint(res.Tools))
+	}
+}
+
+// catalogCleared 白盒判缓存目录是否已被清空。
+func catalogCleared(p *Pool, name string) bool {
+	st := p.conn(name)
+	if st == nil {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.catalog == nil
+}
+
+// TestRefreshCatalogKeptOnSameFace 探活刷新不误伤：缓存目录来自 raw 通道、探活
+// 结果来自 typed 通道——同工具面不得清缓存（回归态：每次探活必清 → 探活周期
+// 驱动的 tools/list 风暴，「连接时一次列举」不变量被打破）；工具面真变（增属性）
+// 才清。
+func TestRefreshCatalogKeptOnSameFace(t *testing.T) {
+	ts := fingerprintServer(t)
+	cli, tr := dialFidelity(t, ts)
+
+	raw, err := fetchRawToolsList(context.Background(), tr, cli.ProtocolVersion())
+	if err != nil {
+		t.Fatalf("raw fetch: %v", err)
+	}
+	entries, err := parseRawToolsList(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	p := NewPool()
+	seedFake(p, "srv", cli) // 连接存在（refreshCatalogIfChanged 只对有缓存者动作）
+	setConn(p, "srv", func(st *connState) { st.catalog = entries })
+
+	// 同工具面：typed 探活结果 → 不清
+	res, err := cli.ListTools(context.Background(), mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.refreshCatalogIfChanged("srv", res.Tools)
+	if catalogCleared(p, "srv") {
+		t.Fatal("同工具面探活不得清 catalog（#66 回归：指纹两侧不同源）")
+	}
+
+	// 工具面真变（schema 增属性）→ 清（#53 的原语义保持）
+	changed := make([]mcp.Tool, len(res.Tools))
+	copy(changed, res.Tools)
+	changed[0].InputSchema.Properties["extra"] = map[string]any{"type": "string"}
+	p.refreshCatalogIfChanged("srv", changed)
+	if !catalogCleared(p, "srv") {
+		t.Fatal("工具面变化应清 catalog")
+	}
+}

@@ -114,6 +114,13 @@ func (p *Pool) refreshCatalogIfChanged(name string, tools []mcp.Tool) {
 
 // probeFingerprint 数量 + 名集 + schema 摘要（探活节奏的廉价一致性判据；
 // 描述文本不参与——只有工具面/schema 变化才要求缓存失效）。
+//
+// 指纹锚定**类型化可见面**（t.InputSchema 的序列化）且两侧同源
+// （oagentkit/mcpkit#66）：缓存侧的 raw 通道目录经 parseRawToolsList 以同口径
+// 回填 InputSchema——同一份 wire JSON 双通道各自 Unmarshal 进同一结构，指纹必
+// 相等；「探活」不是「重新拉目录」，比对基准是会话内已见目录的稳定表示，
+// 同工具面不得触发缓存失效（否则探活周期驱动 tools/list 风暴，打破「连接时
+// 一次列举」不变量）。
 func probeFingerprint(tools []mcp.Tool) string {
 	names := make([]string, len(tools))
 	schemas := make([]string, len(tools))
