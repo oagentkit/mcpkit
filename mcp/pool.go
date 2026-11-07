@@ -763,11 +763,16 @@ func (p *Pool) evict(name string, cli client.MCPClient) {
 
 // detachLocked 摘除连接并连带失效目录/代际（evict/ReapIdle/Close 三处同构的
 // 失效逻辑单源；调用方须持 st.mu）。返回被摘下的连接供锁外 Close。
+// tr/protoVersion 一并清空（oagentkit/mcpkit#61）：句柄与连接同生命周期——
+// 残留旧值会让 evict 后、重新 registerConn 前的 catalogFor 快照到已死 transport
+// （必然失败的列举 + 多一次 evict 抖动）；清空后该窗口回落类型化通道语义。
 func (st *connState) detachLocked() client.MCPClient {
 	cli := st.cli
 	st.cli = nil
 	st.catalog = nil
 	st.modern = false
+	st.tr = nil
+	st.protoVersion = ""
 	return cli
 }
 
