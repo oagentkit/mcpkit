@@ -165,7 +165,8 @@ func scriptedMCPHelper(t *testing.T) {
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	out := bufio.NewWriter(os.Stdout)
 	respond := func(id json.RawMessage, payload string) {
-		fmt.Fprintf(out, `{"jsonrpc":"2.0","id":%s,%s}`+"\n", id, payload)
+		// errcheck：写测试 helper 的 stdout，失败无处置面，显式忽略
+		_, _ = fmt.Fprintf(out, `{"jsonrpc":"2.0","id":%s,%s}`+"\n", id, payload)
 		_ = out.Flush()
 	}
 	for sc.Scan() {
