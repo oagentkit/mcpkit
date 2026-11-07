@@ -17,12 +17,70 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-var rawReqID atomic.Int64
+// sharedIDTransport 单源 request-ID 分配器（oagentkit/mcpkit#65）。
+//
+// 背景：raw 目录通道与 mcp-go 类型化 client 写向**同一条 transport**，但两套
+// 互不知晓的计数器（此前：raw 用包级全局、typed 用 per-client，都从 1 起步的
+// 稠密小整数）必然重号——stdio transport 按 request.ID 键路由响应，同号在途
+// 注册**静默覆盖**（后写胜）、无匹配应答**静默丢弃**：typed 调用挂死到 ctx
+// 超时、raw 列举收到串台的 tools/call 结果解析出 0 条目 + nil error 把空目录
+// 写进缓存（grantsAll 场景该 server 全部工具静默消失）、tools/call 收到串台的
+// tools/list 结果（LLM 拿到空信封当工具输出）。
+//
+// 修法：建连单点（dialStdio/dialHTTP）把 transport 包进本类型——**该连接上
+// 所有**出站请求的 wire ID 都从同一个原子计数器取号（类型化 client 自带的
+// per-client 计数器在包装器上被改写，不再上 wire）。SendRequest 同步返回，
+// 改号/还原对调用方无感：请求侧覆盖 ID、响应侧还原调用方原始 ID（typed
+// client 的响应对账/追踪按它的 ID 走）。
+//
+// 稠密小整数从 1 起步（与 JSON 数字 float64 解析路径相容，无 2^53 失真面）。
+type sharedIDTransport struct {
+	transport.Interface
+	next atomic.Int64
+}
+
+// SendRequest 改号转发：wire ID 单源分配，响应 ID 还原为调用方原值。
+func (s *sharedIDTransport) SendRequest(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+	callerID := request.ID
+	request.ID = mcp.NewRequestId(s.next.Add(1))
+	resp, err := s.Interface.SendRequest(ctx, request)
+	if resp != nil {
+		resp.ID = callerID
+	}
+	return resp, err
+}
+
+// SetRequestHandler 转发 BidirectionalInterface（elicitation 等带外请求通道——
+// 不转发则 client.Start 的类型断言落到包装器上失败，带外请求全部 METHOD_NOT_FOUND）。
+func (s *sharedIDTransport) SetRequestHandler(handler transport.RequestHandler) {
+	if bi, ok := s.Interface.(transport.BidirectionalInterface); ok {
+		bi.SetRequestHandler(handler)
+	}
+}
+
+// SetProtocolVersion 转发 HTTPConnection（协商版本回写 transport——不转发则
+// 现代 HTTP 连接的逐请求版本头不生效）。
+func (s *sharedIDTransport) SetProtocolVersion(version string) {
+	if hc, ok := s.Interface.(transport.HTTPConnection); ok {
+		hc.SetProtocolVersion(version)
+	}
+}
+
+// RequiresLegacyProtocol 转发 StreamableHTTP 的 legacy 判定（WithListeningEnabled
+// 场景要求 legacy 协议——client 协议协商按本方法分流，不转发会改变协商行为）。
+func (s *sharedIDTransport) RequiresLegacyProtocol() bool {
+	if lr, ok := s.Interface.(interface{ RequiresLegacyProtocol() bool }); ok {
+		return lr.RequiresLegacyProtocol()
+	}
+	return false
+}
 
 // fetchRawToolsList 原始 tools/list（单页，与类型化通道同不翻页——目录场景页大小足够）。
 // protoVersion 为空/旧协议 = 裸请求；现代协议（2026-07-28 起）逐请求要求 _meta
 // protocolVersion 与 MCP-Protocol-Version 头双写且一致——与 client.do 的
 // applyRequestMeta/applyStandardHeaders 同口径（tools/list 无调用方 _meta，归因键不适用）。
+// ID 为占位 0：生产路径 tr 恒为 sharedIDTransport（dial 单点包装），wire ID 由
+// 其单源改号；直构 transport 的白盒测试路径单线程串行调用，占位号无碰撞面。
 func fetchRawToolsList(ctx context.Context, tr transport.Interface, protoVersion string) (json.RawMessage, error) {
 	params := map[string]any{}
 	header := http.Header{}
@@ -42,7 +100,7 @@ func fetchRawToolsList(ctx context.Context, tr transport.Interface, protoVersion
 	}
 	resp, err := tr.SendRequest(ctx, transport.JSONRPCRequest{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		ID:      mcp.NewRequestId(rawReqID.Add(1)),
+		ID:      mcp.NewRequestId(0),
 		Method:  "tools/list",
 		Params:  params,
 		Header:  header,

@@ -823,7 +823,11 @@ func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.Clien
 	if err := t.Start(ctx); err != nil {
 		return nil, nil, fmt.Errorf("mcp: server %s stdio 启动失败: %w", cfg.Name, err)
 	}
-	return client.NewClient(t, clientOpts...), t, nil
+	// 单源 request-ID 包装（oagentkit/mcpkit#65）：typed client 与 raw 目录通道
+	// 共用本 transport，wire ID 必须同源分配——登记的句柄即包装器（catalogFor
+	// 的 raw 通道经它取号）。
+	shared := &sharedIDTransport{Interface: t}
+	return client.NewClient(shared, clientOpts...), shared, nil
 }
 
 // dialHTTP streamable http 传输建连（可挂 OAuth）。
@@ -855,7 +859,9 @@ func (p *Pool) dialHTTP(ctx context.Context, cfg ServerConfig, clientOpts ...cli
 	if err != nil {
 		return nil, nil, fmt.Errorf("mcp: server %s http transport 构造失败: %w", cfg.Name, err)
 	}
-	return client.NewClient(tt, clientOpts...), tt, nil
+	// 单源 request-ID 包装（同 dialStdio）：typed/raw 双通道 wire ID 同源。
+	shared := &sharedIDTransport{Interface: tt}
+	return client.NewClient(shared, clientOpts...), shared, nil
 }
 
 // firstPositive 非零胜出（Timeout/RequestTimeout/ProbeTimeout 三处回退单源）。
