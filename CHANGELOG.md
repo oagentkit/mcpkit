@@ -2,6 +2,12 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.12.2] — 2026-11-08
+
+### 依赖地板：oekit 基座追平 BOM v0.2.9——pkg v0.37.4 / logx v0.8.10 / concurrency v0.28.4
+
+oekit BOM 兼容地板门禁（oekit/oekit#163）对齐轮；无代码变更。
+
 ## [v0.12.1] — 2026-11-08
 
 - 杂务(deps)：依赖地板追到最新——concurrency v0.28.3 / pkg v0.37.3 / runtime v0.12.1 / textx v0.10.1 / guardx v0.23.1（按本仓依赖取齐）
