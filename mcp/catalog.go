@@ -222,6 +222,11 @@ type RawNamer interface {
 
 func (m *invokableTool) RawToolName() string { return m.callName() }
 
+// mcpClient 暴露本工具绑定的底层连接（mcpClienter 能力面）：自愈链经
+// selfHealTool.currentClient 解析「当前 inner 实际持有的连接」做 evict 实例
+// 比对（oagentkit/mcpkit#88）——换代即随新工具走，比对基准不再凝固装配代。
+func (m *invokableTool) mcpClient() client.MCPClient { return m.cli }
+
 // RawToolNameOf 取工具的原始名：实现 RawNamer 的（本包装配的）直取；否则
 // 回落 Info().Name（测试桩/外部实现——此时暴露名即所能给出的最好值）。
 func RawToolNameOf(t tool.BaseTool) string {
@@ -290,6 +295,7 @@ func (m *invokableTool) InvokableRun(ctx context.Context, args string, _ ...tool
 var (
 	_ tool.BaseTool      = (*invokableTool)(nil)
 	_ tool.InvokableTool = (*invokableTool)(nil)
+	_ mcpClienter        = (*invokableTool)(nil)
 )
 
 // catalogFor 取 server 目录（缓存优先，缺则线上列举一次并落缓存）。列举失败 =
