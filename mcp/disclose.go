@@ -10,8 +10,9 @@
 package mcp
 
 import (
-	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -81,11 +82,18 @@ func (v DisclosureVerdict) Retryable() bool { return v.State == DisclosureRetrya
 //
 // 名字空间约定：Check 的名字与 Catalog/loaded 的名字须同空间（原始名或带
 // server 的暴露名均可——门禁只做集合比对，不猜命名）。并发安全：Check 可被
-// 多 goroutine 调用；激活成功即入已披露集（之后判定为放行）。
+// 多 goroutine 调用；激活成功即入已披露集（之后判定为放行）。激活器在门禁
+// 锁外执行（oagentkit/mcpkit#75）：慢激活不阻塞任何 Check/Loaded/Catalog，
+// 锁只保护 loaded/inflight 两个可变结构（catalog/guidance 构造后不可变）。
 type DisclosureGate struct {
 	mu      sync.Mutex
 	catalog Catalog
 	loaded  map[string]struct{}
+	// inflight 单飞去重（oagentkit/mcpkit#75）：同名工具的并发激活收敛到
+	// 一次执行——首个注册者在锁外跑激活器，后来者等其 done（等的是**别的
+	// goroutine** 在锁外干活，不是等锁，无死锁面）。激活失败的代不留痕迹，
+	// 下一次 Check 起新一代重试。
+	inflight map[string]*activationCall
 	// activate 宿主提供的激活动作（把工具从「未披露」转「已披露」——如把
 	// 工具装进模型的工具表并热刷新）；nil = 门禁不代激活（宿主自管，判定
 	// 仍给出可重试语义）。
@@ -94,12 +102,25 @@ type DisclosureGate struct {
 	guidance DisclosureGuidance
 }
 
+// activationCall 一次进行中的激活：done 关闭即完成（err 为激活器结果）。
+// close(done) 前先在锁内完成 loaded 入集/回滚——等待者醒来必见终态。
+type activationCall struct {
+	done chan struct{}
+	err  error
+}
+
 // DisclosureGateOption 门禁构造选项（XxxOption 命名纪律：多包 co-import 防冲突）。
 type DisclosureGateOption func(*DisclosureGate)
 
 // WithDisclosureActivator 配置激活动作：判定为「目录内未披露」时顺手调用
 // （成功即入已披露集，模型重试时直接放行——「拒但顺手激活，重试必成」的
 // 落地）。未配置时门禁只判定不激活（可重试语义仍在，激活由宿主另行完成）。
+//
+// 锁契约（oagentkit/mcpkit#75）：激活器在门禁锁**外**执行——慢激活（装配
+// 工具、热刷新等）不阻塞其他工具的 Check/Loaded/Catalog；激活器允许回查
+// 本门禁（Loaded/Catalog/对其他工具的 Check 均安全，不会自死锁）。同名工具
+// 的并发激活由单飞去重：同一次激活代内激活器只执行一次。唯一禁止：对
+// **正在激活的同一工具**递归 Check——该调用会等待本次激活完成（即等待自身）。
 func WithDisclosureActivator(fn func(tool string) error) DisclosureGateOption {
 	return func(g *DisclosureGate) { g.activate = fn }
 }
@@ -133,34 +154,101 @@ func NewDisclosureGate(catalog Catalog, loaded []string, opts ...DisclosureGateO
 //     Check 放行，模型侧「原样重试必成」由此兑现）；
 //   - 目录外 → 拒绝且**不可重试**（DisclosureTerminalDenied）：重试不会成功，
 //     文案指示模型换工具。
+//
+// 锁纪律（oagentkit/mcpkit#75）：g.mu 只罩住 loaded/inflight 的读写与三态
+// 判定——激活器调用在锁外执行，慢激活不把 Check/Loaded/Catalog 拖成全局
+// 串行段，激活器回查门禁也不自死锁。
 func (g *DisclosureGate) Check(tool string) DisclosureVerdict {
+	// 三态判定与单飞注册同一临界区：loaded 复查、目录判定、inflight 注册
+	// 原子完成。拆成两段锁会让迟到者漏看刚入集的 loaded 又看不到进行中的
+	// 激活，从而重复激活（TestDisclosureConcurrentCheck 的「恰好一次」契约）。
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if _, ok := g.loaded[tool]; ok {
+		g.mu.Unlock()
 		return DisclosureVerdict{State: DisclosureAllowed, Tool: tool}
 	}
 	if !g.catalog.Contains(tool) {
+		g.mu.Unlock()
 		return DisclosureVerdict{
 			State:    DisclosureTerminalDenied,
 			Tool:     tool,
 			Guidance: g.terminalGuidance(tool),
 		}
 	}
+	if g.activate == nil {
+		g.mu.Unlock()
+		return DisclosureVerdict{ // 宿主自管激活：可重试语义照给，不代激活
+			State:    DisclosureRetryableDenied,
+			Tool:     tool,
+			Guidance: g.retryableGuidance(tool),
+		}
+	}
+	call, leader := g.inflight[tool], false
+	if call == nil {
+		call = &activationCall{done: make(chan struct{})}
+		if g.inflight == nil {
+			g.inflight = make(map[string]*activationCall)
+		}
+		g.inflight[tool] = call
+		leader = true
+	}
+	g.mu.Unlock()
+
+	if !leader {
+		<-call.done // 等 leader 在锁外跑完激活器（等的是激活，不是锁）
+		if call.err != nil {
+			// 同代激活失败如实透传（Err 交处置层告警）；失败代已从 inflight
+			// 移除，下一次 Check 自动起新代重试
+			return DisclosureVerdict{
+				State:    DisclosureRetryableDenied,
+				Tool:     tool,
+				Guidance: g.retryableGuidance(tool),
+				Err:      call.err,
+			}
+		}
+		return g.allowedIfLoaded(tool)
+	}
+
+	err := g.activate(tool) // 锁外：慢激活/re-entrant 回查均安全（#75）
+	g.mu.Lock()
+	call.err = err
+	if err == nil {
+		if _, dup := g.loaded[tool]; !dup {
+			g.loaded[tool] = struct{}{}
+		}
+	}
+	delete(g.inflight, tool)
+	close(call.done) // 先入集/回滚、后关闭：等待者醒来必见终态
+	g.mu.Unlock()
+
 	v := DisclosureVerdict{
 		State:    DisclosureRetryableDenied,
 		Tool:     tool,
 		Guidance: g.retryableGuidance(tool),
 	}
-	if g.activate == nil {
-		return v // 宿主自管激活：可重试语义照给，不代激活
-	}
-	if err := g.activate(tool); err != nil {
+	if err != nil {
 		v.Err = err // 激活通道故障：目录事实不变（仍可重试），Err 交处置层告警
 		return v
 	}
-	g.loaded[tool] = struct{}{}
 	v.Activated = true
 	return v
+}
+
+// allowedIfLoaded 激活完成后的放行复判：并发同代激活里，等待者在 leader 成功
+// 入集后到达这里——与旧串行实现（后来者拿锁直接命中放行）同一观测语义。
+// 激活成功必入集，未命中属理论不可达的保守回落：维持可重试语义不虚假放行。
+func (g *DisclosureGate) allowedIfLoaded(tool string) DisclosureVerdict {
+	g.mu.Lock()
+	_, ok := g.loaded[tool]
+	g.mu.Unlock()
+	if ok {
+		return DisclosureVerdict{State: DisclosureAllowed, Tool: tool}
+	}
+	return DisclosureVerdict{
+		State:    DisclosureRetryableDenied,
+		Tool:     tool,
+		Guidance: g.retryableGuidance(tool),
+	}
 }
 
 // Loaded 当前已披露集快照（排序；观测/对账用）。
@@ -182,16 +270,58 @@ func (g *DisclosureGate) Catalog() Catalog {
 	return g.catalog
 }
 
+// retryableGuidance/terminalGuidance 的渲染单源：模板内的 %s/%q 占位按出现
+// 顺序替换——第一个吃工具名、后续依次吃 server 名（缺省 Terminal 模板的
+// 「工具+server」双占位即此形态）；不经过 fmt（#76）。
 func (g *DisclosureGate) retryableGuidance(tool string) string {
 	if g.guidance.Retryable != "" {
-		return fmt.Sprintf(g.guidance.Retryable, tool)
+		return renderGuidance(g.guidance.Retryable, tool, g.catalog.Server)
 	}
-	return fmt.Sprintf(defaultRetryableGuidance, tool)
+	return renderGuidance(defaultRetryableGuidance, tool, g.catalog.Server)
 }
 
 func (g *DisclosureGate) terminalGuidance(tool string) string {
 	if g.guidance.Terminal != "" {
-		return fmt.Sprintf(g.guidance.Terminal, tool)
+		return renderGuidance(g.guidance.Terminal, tool, g.catalog.Server)
 	}
-	return fmt.Sprintf(defaultTerminalGuidance, tool, g.catalog.Server)
+	return renderGuidance(defaultTerminalGuidance, tool, g.catalog.Server)
+}
+
+// renderGuidance 模板渲染：手工扫描替换 %s/%q 占位（%% 折叠为字面 %），按
+// 出现顺序注入——第 1 个动词吃工具名、后续依次吃 server 名（缺省 Terminal
+// 模板的「工具+server」双占位即此形态）；无占位动词的模板原样输出。绝不
+// 经过 fmt，杜绝 %!(EXTRA string=…)/%!s(MISSING) 伪影泄漏进模型面拒绝文案
+// （oagentkit/mcpkit#76：宿主模板无动词时 fmt.Sprintf 把多余实参追加成
+// 乱码，配置期零信号）。其他动词形态（%v/%d 等）不在契约内，字面输出。
+func renderGuidance(tpl, tool, server string) string {
+	var b strings.Builder
+	b.Grow(len(tpl) + 2*len(tool))
+	n := 0
+	for i := 0; i < len(tpl); i++ {
+		c := tpl[i]
+		if c != '%' || i+1 >= len(tpl) {
+			b.WriteByte(c)
+			continue
+		}
+		switch tpl[i+1] {
+		case '%':
+			b.WriteByte('%')
+			i++
+		case 's', 'q':
+			arg := server
+			if n == 0 {
+				arg = tool // 第一个占位点名工具
+			}
+			n++
+			if tpl[i+1] == 'q' {
+				b.WriteString(strconv.Quote(arg))
+			} else {
+				b.WriteString(arg)
+			}
+			i++
+		default:
+			b.WriteByte(c) // 非契约动词：字面保留
+		}
+	}
+	return b.String()
 }
