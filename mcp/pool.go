@@ -195,6 +195,10 @@ type Pool struct {
 	// 扇出此前并发 = server 数——N 个 stdio server 同时拉起子进程即 fork 风暴
 	// （批量重装配/reload 场景资源尖刺无约束）。<=0 取 DefaultMaxConcurrentDials。
 	MaxConcurrentDials int
+	// dialFn 建连替身注入口（白盒测试专用，生产恒 nil）：非 nil 时替代 dial
+	// 的 stdio/http 分派——自愈两连断回归（oagentkit/mcpkit#88）需要让 redial
+	// 的重新建连落到编排型假体上，不注替身就只能拿真实子进程/网络做测试。
+	dialFn func(ctx context.Context, cfg ServerConfig) (client.MCPClient, transport.Interface, error)
 }
 
 // DefaultMaxConcurrentDials 装配扇出缺省并发（保守值：stdio 子进程拉起是
@@ -549,7 +553,7 @@ func (p *Pool) wrapSelfHeal(ctx context.Context, cfg ServerConfig, spec ToolSpec
 			out = append(out, &selfHealTool{
 				name:   info.Name,
 				inner:  it,
-				redial: p.selfHealRedial(cfg, spec, info.Name, cli),
+				redial: p.selfHealRedial(cfg, spec, info.Name),
 			})
 			continue
 		}
@@ -786,6 +790,9 @@ func (st *connState) detachLocked() client.MCPClient {
 // 等——只能在 NewClient 时挂，便捷构造器不接收）；stdio 便捷构造器自动 Start 的行为
 // 在此显式化（直构不 Start 子进程不会拉起）。
 func (p *Pool) dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, transport.Interface, error) {
+	if p.dialFn != nil { // 白盒测试注入口（生产恒 nil）
+		return p.dialFn(ctx, cfg)
+	}
 	clientOpts := func() []client.ClientOption {
 		if p.ElicitationHandler == nil {
 			return nil

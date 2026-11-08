@@ -12,6 +12,7 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"github.com/mark3labs/mcp-go/client"
 )
 
 // errorAsObservation 包装可调用工具（MCP 工具均为 InvokableTool 形态）。
@@ -35,6 +36,16 @@ func (w *errorAsObservation) RawToolName() string {
 func (w *errorAsObservation) OutputSchema() json.RawMessage {
 	if o, ok := w.inner.(OutputSchemer); ok {
 		return o.OutputSchema()
+	}
+	return nil
+}
+
+// mcpClient 透传底层连接解析（mcpClienter 能力面）：自愈链经 selfHealTool
+// 穿透本装饰器解析当前装配代连接（oagentkit/mcpkit#88）；inner 无该能力面
+// （测试桩/外部实现）返回 nil。
+func (w *errorAsObservation) mcpClient() client.MCPClient {
+	if c, ok := w.inner.(mcpClienter); ok {
+		return c.mcpClient()
 	}
 	return nil
 }

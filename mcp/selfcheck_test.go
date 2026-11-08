@@ -43,6 +43,14 @@ type scriptedClient struct {
 	listCount int
 	// pingCount 统计 Ping 次数。
 	pingCount int
+	// closes 统计 Close 次数（自愈 evict 摘除连接的观测锚，oagentkit/mcpkit#88）。
+	closes int
+}
+
+// Initialize 建连握手替身（dialFn 注入路径的 dialAndRegister 会调）：不做任何
+// 有状态动作，返回空握手结果。
+func (c *scriptedClient) Initialize(context.Context, mcp.InitializeRequest) (*mcp.InitializeResult, error) {
+	return &mcp.InitializeResult{}, nil
 }
 
 func (c *scriptedClient) Ping(context.Context) error {
@@ -70,7 +78,10 @@ func (c *scriptedClient) CallTool(_ context.Context, req mcp.CallToolRequest) (*
 	return mcp.NewToolResultText("ok"), nil
 }
 
-func (c *scriptedClient) Close() error { return nil }
+func (c *scriptedClient) Close() error {
+	c.closes++
+	return nil
+}
 
 // newFakeServer 造一个 in-process MCP server（含指定工具）。
 func newFakeServer(t *testing.T, toolNames ...string) *server.MCPServer {

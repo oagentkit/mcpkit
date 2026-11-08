@@ -10,6 +10,7 @@
 package mcp
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -121,6 +122,8 @@ type DisclosureGateOption func(*DisclosureGate)
 // 本门禁（Loaded/Catalog/对其他工具的 Check 均安全，不会自死锁）。同名工具
 // 的并发激活由单飞去重：同一次激活代内激活器只执行一次。唯一禁止：对
 // **正在激活的同一工具**递归 Check——该调用会等待本次激活完成（即等待自身）。
+// 激活器 panic 被门禁转为激活通道故障（oagentkit/mcpkit#89）：inflight 清理照走、
+// 等待者醒来，Check 返回可重态 + Err（与返回 error 同形态），不再向调用方上抛。
 func WithDisclosureActivator(fn func(tool string) error) DisclosureGateOption {
 	return func(g *DisclosureGate) { g.activate = fn }
 }
@@ -209,7 +212,7 @@ func (g *DisclosureGate) Check(tool string) DisclosureVerdict {
 		return g.allowedIfLoaded(tool)
 	}
 
-	err := g.activate(tool) // 锁外：慢激活/re-entrant 回查均安全（#75）
+	err := g.activateGuarded(tool) // 锁外：慢激活/re-entrant 回查均安全（#75）；panic 转错误（#89）
 	g.mu.Lock()
 	call.err = err
 	if err == nil {
@@ -232,6 +235,23 @@ func (g *DisclosureGate) Check(tool string) DisclosureVerdict {
 	}
 	v.Activated = true
 	return v
+}
+
+// activateGuarded 锁外执行激活器，panic 转 error（oagentkit/mcpkit#89）：激活器
+// panic 原样穿透曾让 Check 的 inflight 清理段永不执行——inflight[tool] 残留、
+// call.done 永不关闭，宿主 agent 框架在工具调用外层 recover（GoSafe 类）进程存活
+// 后，该工具的每一次 Check（含并发后来者）都永久阻塞在 done 上，门禁不可恢复地
+// 卡死且无观测信号。与本仓依赖的 concurrency/singleflight.Do 同口径：panic 转
+// error，leader 侧走既有失败收尾（call.err/delete/close——defer/finally 语义，
+// panic 与 error 同一出口），等待者醒来拿到同代「激活通道故障」语义（#75），
+// 失败代不留痕迹，下一次 Check 起新代重试。
+func (g *DisclosureGate) activateGuarded(tool string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("mcp: 披露激活器 panic: %v", r)
+		}
+	}()
+	return g.activate(tool)
 }
 
 // allowedIfLoaded 激活完成后的放行复判：并发同代激活里，等待者在 leader 成功

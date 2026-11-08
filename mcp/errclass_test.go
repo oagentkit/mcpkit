@@ -49,6 +49,33 @@ func TestErrorKindUnmarshalStrict(t *testing.T) {
 	}
 }
 
+// 空串显式归 unknown（mcpkit#90 回归）：手写监控/告警配置里 `"kind": ""`
+// （留空=不筛选）是最常见形态，此前落 default fail-fast——「看起来最该宽容的
+// 写法最严」（字段缺失 {} 不炸，只有显式留空炸）。这是 #54 fail-fast 的唯一
+// 例外：空串零信息量、无 typo 可言，与错误面 KindOf(nil)==KindUnknown 口径一致。
+// 序列化侧（String/MarshalJSON）从不产出空串，故这不是序列化回环，而是对手写
+// 留空的宽容——回环循环用 String() 生成输入结构上测不到空串，须直喂 `""`。
+func TestErrorKindUnmarshalEmptyString(t *testing.T) {
+	var k ErrorKind
+	if err := json.Unmarshal([]byte(`""`), &k); err != nil || k != KindUnknown {
+		t.Fatalf("空串应显式反解为 unknown（mcpkit#90）: %v %s", err, k)
+	}
+	// 结构体载荷形态：显式留空的过滤器配置照常反解
+	var env struct {
+		Kind ErrorKind `json:"kind"`
+	}
+	if err := json.Unmarshal([]byte(`{"kind":""}`), &env); err != nil || env.Kind != KindUnknown {
+		t.Fatalf("载荷 {\"kind\":\"\"} 应反解为 unknown: %v %s", err, env.Kind)
+	}
+	// 反向锚：序列化侧永不产出空串——空串归宿是手写留空的宽容，非序列化产物
+	for _, want := range []ErrorKind{KindUnknown, KindUnreachable, KindProtocol, KindToolMissing, KindInvalidArgs} {
+		b, _ := json.Marshal(want)
+		if string(b) == `""` {
+			t.Fatalf("序列化侧不应产出空串: %s", b)
+		}
+	}
+}
+
 // 探活刷新目录缓存（mcpkit#53）：探活成功路径比对指纹，变化即失效——
 // 探活周期 < maxIdle 时 server 工具面变化不再永久不可见。
 func TestProbeFingerprintChanges(t *testing.T) {

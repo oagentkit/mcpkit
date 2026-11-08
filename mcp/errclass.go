@@ -70,14 +70,20 @@ func (k ErrorKind) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON 支持从分类名反解。未知名串 fail-fast（oagentkit/mcpkit#54）：
 // 此前静默归 KindUnknown——监控/告警配置里的 typo（"unreachble"）零可见性地
 // 降级为 unknown（=不可重试），与序列化侧「监控不该看到裸 int」的用心不对称。
-// 空串是 kindString(KindUnknown) 的序列化产物，合法回环。
+//
+// 空串显式归 KindUnknown（oagentkit/mcpkit#90，#54 fail-fast 的唯一例外）：
+// 本包序列化侧（String/MarshalJSON）从不产出空串（KindUnknown 序列化为
+// "unknown"），空串只来自手写配置——监控/告警过滤器里 `"kind": ""`（留空表示
+// 「不筛选」）是最常见形态；字段缺失（{}）不进本方法，显式留空却曾落 default
+// fail-fast——「看起来最该宽容的写法最严」。空串无 typo 可言（零信息量），
+// 与错误面口径一致：KindOf(nil)/ClassifyError(nil) 均归 KindUnknown。
 func (k *ErrorKind) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
 	switch s {
-	case "unknown":
+	case "", "unknown": // 空串：显式留空 = 未知/不筛选（手写配置合法形态，oagentkit/mcpkit#90）
 		*k = KindUnknown
 	case "unreachable":
 		*k = KindUnreachable
