@@ -148,6 +148,102 @@ func TestDisclosureConcurrentCheck(t *testing.T) {
 	}
 }
 
+// TestDisclosureActivatorPanicRecovers mcpkit#89 回归：激活器 panic 不得泄漏
+// inflight 条目——此前 panic 原样穿透让 inflight 清理段永不执行，宿主 GoSafe
+// 兜底进程存活后该工具的每一次 Check 都永久阻塞在 call.done 上（门禁不可恢复
+// 卡死且无观测信号）。panic 转为激活通道故障：Check 返回可重态 + Err（与激活器
+// 返回 error 同形态），失败代不留痕迹，下一次 Check 起新代重试并可恢复。
+func TestDisclosureActivatorPanicRecovers(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	g := NewDisclosureGate(newGateCatalog(), nil,
+		WithDisclosureActivator(func(string) error {
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			if n == 1 {
+				panic("activator exploded")
+			}
+			return nil
+		}))
+
+	// 首代激活 panic：Check 不向调用方抛 panic（否则宿主 recover 后门禁已挂死），
+	// 等待者语义与激活器 error 同型——可重态 + Err 交处置层告警
+	var v DisclosureVerdict
+	done := make(chan struct{})
+	go func() {
+		v = g.Check("write")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("激活器 panic 后 Check 永久阻塞（mcpkit#89：inflight 泄漏）")
+	}
+	if !v.Retryable() || v.Activated || v.Err == nil {
+		t.Fatalf("激活器 panic 应转 Err 且保可重态: %+v", v)
+	}
+	if !strings.Contains(v.Err.Error(), "panic") {
+		t.Fatalf("Err 应携带 panic 信息: %v", v.Err)
+	}
+	if got := g.Loaded(); len(got) != 0 {
+		t.Fatalf("panic 代不得入已披露集: %v", got)
+	}
+
+	// 下一次 Check 起新代重试并成功：门禁可恢复（泄漏态下这里会永阻塞）
+	mu.Lock()
+	n := calls
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("panic 代应恰好执行一次激活器，实际 %d", n)
+	}
+	if v2 := g.Check("write"); !v2.Retryable() || !v2.Activated || v2.Err != nil {
+		t.Fatalf("新一代激活应成功: %+v", v2)
+	}
+	if v3 := g.Check("write"); !v3.Allowed() {
+		t.Fatalf("恢复后重试应放行: %+v", v3)
+	}
+}
+
+// TestDisclosureActivatorPanicWakesWaiters mcpkit#89 回归（并发面）：panic 代进行
+// 中到达的同名 Check 加入等待，leader panic 后必须醒来拿到同代失败语义（Err），
+// 不得永阻塞在 done 上。
+func TestDisclosureActivatorPanicWakesWaiters(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	g := NewDisclosureGate(newGateCatalog(), nil,
+		WithDisclosureActivator(func(string) error {
+			close(entered)
+			<-release
+			panic("activator exploded")
+		}))
+
+	leader := make(chan DisclosureVerdict, 1)
+	go func() { leader <- g.Check("write") }()
+	<-entered
+	join := make(chan DisclosureVerdict, 1)
+	go func() { join <- g.Check("write") }() // 加入首代，等 done 非等锁
+	close(release)
+
+	select {
+	case lv := <-leader:
+		if !lv.Retryable() || lv.Err == nil {
+			t.Fatalf("leader 应可重态 + Err: %+v", lv)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("leader panic 后未返回（mcpkit#89）")
+	}
+	select {
+	case jv := <-join:
+		if !jv.Retryable() || jv.Err == nil {
+			t.Fatalf("等待者应醒来拿同代失败语义: %+v", jv)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("等待者永阻塞在 done（mcpkit#89：inflight 泄漏）")
+	}
+}
+
 // TestDisclosureGuidanceNoVerbVerbatim mcpkit#76 回归：无占位动词的宿主模板
 // 原样输出——Guidance 是模型面文案，此前 fmt.Sprintf 把多余实参以
 // %!(EXTRA string=…) 伪影追加进拒绝文本，宿主侧零信号。
