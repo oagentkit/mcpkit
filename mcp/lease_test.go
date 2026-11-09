@@ -10,12 +10,16 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// fakeClient MCPClient 假体：Ping 可编排死活。
+// fakeClient MCPClient 假体：Ping/ListTools 可编排死活（#100 起 legacy 探活
+// ping 成功后也走 tools/list 比对指纹，列举须可编排）。
 type fakeClient struct {
 	client.MCPClient // embedding：未实现方法 panic 即「测试不应触达」
 	dead             bool
+	listErr          error // 模拟 ping 活但列举失败（#100 失败语义：随探活失败摘除）
+	tools            []mcp.Tool
 	closed           bool
 }
 
@@ -24,6 +28,13 @@ func (f *fakeClient) Ping(ctx context.Context) error {
 		return errors.New("connection refused")
 	}
 	return nil
+}
+
+func (f *fakeClient) ListTools(_ context.Context, _ mcp.ListToolsRequest) (*mcp.ListToolsResult, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return &mcp.ListToolsResult{Tools: f.tools}, nil
 }
 
 func (f *fakeClient) Close() error {

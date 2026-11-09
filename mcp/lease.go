@@ -38,9 +38,16 @@ const DefaultProbeTimeout = 5 * time.Second
 // 探活方法按建连协商的协议代际分流（v0.10.29 审计修复——mcp-go v1.1 起现代
 // 协议 2026-07-28 移除了 ping RPC，Client.Ping 在该代际是 no-op，曾让探活
 // 虚报存活且 touch 给死连接续命、闲置回收永远收不走）：
-//   - legacy（≤2025-11-25）：协议 ping；
+//   - legacy（≤2025-11-25）：协议 ping 证活；
 //   - modern（2026-07-28+）：改发真实轻量 RPC（tools/list）——比 ping 重，
 //     但这是该代际下唯一能证明连接活着的信号。
+//
+// 两代际在探活成功路径**同口径比对目录指纹**（oagentkit/mcpkit#100——此前
+// legacy 只 ping 不比对，探活周期 < maxIdle 时工具面/schema 变化整个连接
+// 生命周期不可见，与现代分支的 #53 语义不一致）：变化即失效缓存，下次
+// catalogFor 重列全量转换。目录指纹比对需 tools/list，modern 分支本身即以
+// tools/list 证活；legacy 分支 ping 证活后补一发 tools/list——该列举失败随
+// 探活失败同路径处理（连接摘除、下次调用重建；本地取消甄别同款豁免）。
 //
 // 返回 ErrNotConnected = 无缓存连接（不算失败）；其余错误 = 探活失败（连接已摘除）。
 func (p *Pool) PingServer(ctx context.Context, name string) error {
@@ -75,7 +82,20 @@ func (p *Pool) PingServer(ctx context.Context, name string) error {
 			p.refreshCatalogIfChanged(name, res.Tools)
 		}
 	} else {
+		// legacy 协议：协议 ping 证活。ping 成功后同 modern 口径补 tools/list
+		// 比对目录指纹（oagentkit/mcpkit#100）——此前只 ping 不比对，探活成功
+		// 即 touch 续命，探活周期 < maxIdle 时连接永不回收、catalogFor 缓存
+		// 优先，server 工具面变化整个连接生命周期不可见（现代分支注释里记载的
+		// 同款失败模式，只在 modern 代际被修）。列举失败随探活失败同路径处理：
+		// 本地取消豁免保留连接，其余摘除下次调用重建。
 		err = cli.Ping(cctx)
+		if err == nil {
+			var res *mcp.ListToolsResult
+			res, err = cli.ListTools(cctx, mcp.ListToolsRequest{})
+			if err == nil {
+				p.refreshCatalogIfChanged(name, res.Tools)
+			}
+		}
 	}
 	if err != nil {
 		if cctx.Err() != nil {
