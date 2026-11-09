@@ -97,14 +97,6 @@ func (t *selfHealTool) currentInner() tool.InvokableTool {
 	return t.inner
 }
 
-// currentClient 解析当前 inner 实际持有的底层连接（redial 的死连接比对基准）。
-// swapInner 换代后随新 inner 走（oagentkit/mcpkit#88）——比对基准必须是「刚在
-// 本工具上失败的那条连接」，而非装配期固化的某一代。链上无连接暴露面（测试桩/
-// 外部实现）返回 nil：redial 侧对 nil dead 跳过实例比对，直接走建连单飞。
-func (t *selfHealTool) currentClient() client.MCPClient {
-	return clientOf(t.currentInner())
-}
-
 // clientOf 参数化形态的连接解析（oagentkit/mcpkit#99）：从**给定** inner 解析
 // 底层连接，不重读 currentInner——InvokableRun 的调用与 dead 基准必须同源同代。
 // 链上无连接暴露面（测试桩/外部实现）返回 nil。
