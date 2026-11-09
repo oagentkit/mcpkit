@@ -82,10 +82,10 @@ github.com/nikolalohinski/gonja v1.5.3 h1:GsA+EEaZDZPGJ8JtpeGN78jidhOlxeJROpqMT9
 github.com/nikolalohinski/gonja v1.5.3/go.mod h1:RmjwxNiXAEqcq1HeK5SSMmqFJvKOfTfXhkJv6YBtPa4=
 github.com/oagentkit/runtime v0.12.5 h1:YcRtIO6M/pq3xrqsncaOcEv1i3u6X2Ljw20Y9TkDleI=
 github.com/oagentkit/runtime v0.12.5/go.mod h1:qZHIFLpswlDxg4rJEvlJq6vozg9IOQs9Zq+cL1JGGGw=
-github.com/oekit/concurrency v0.31.0 h1:QlGcQatkA4UEGm4ZTytylaxzTDhtYf/IJHQ5e8MKzS4=
-github.com/oekit/concurrency v0.31.0/go.mod h1:EyZjS2fksLwxNa2BeJ/UYASWCyWDPPYghsdv6EtYFbs=
-github.com/oekit/pkg v0.40.0 h1:lFjrCMjF4w9Y4/NFNu16C4sRhM9y5y2y6Juswi6Wx0Y=
-github.com/oekit/pkg v0.40.0/go.mod h1:sVeOtmG1sLY2aSnzFIbUAF2Qoh7G8R5vnWtWmLCv8NM=
+github.com/oekit/concurrency v0.31.1 h1:fg5VRigZPASO3nfcEMsH24IUZYWdsYKL8ww0Kj5660w=
+github.com/oekit/concurrency v0.31.1/go.mod h1:Fv3v1aC9TqQI/QGfK3PclfJylDx+kWN6qhSbGYSOtM8=
+github.com/oekit/pkg v0.41.0 h1:IsIHwG7q8YL6soDMjyOMzuJRr61v2CTsu4+0thR+/W8=
+github.com/oekit/pkg v0.41.0/go.mod h1:sVeOtmG1sLY2aSnzFIbUAF2Qoh7G8R5vnWtWmLCv8NM=
 github.com/onsi/ginkgo v1.6.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
 github.com/onsi/ginkgo v1.8.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
 github.com/onsi/gomega v1.5.0/go.mod h1:ex+gbHU/CVuBBDIJjb2X0qEXbFg53c61hWP/1CpauHY=
