@@ -111,7 +111,7 @@ func TestSelfHealConcurrentHealNoHealthyEvict(t *testing.T) {
 		gate:    make(chan struct{}),
 	}
 	gens := []*scriptedClient{
-		nil, // 占位：gen0 走独立注入（gatedDeadClient 类型不同）
+		nil,                       // 占位：gen0 走独立注入（gatedDeadClient 类型不同）
 		{tools: []string{"calc"}}, // G1 自愈换上的健康连接
 		{tools: []string{"calc"}}, // 旧实现误杀 gen1 后再拨的一代
 	}
