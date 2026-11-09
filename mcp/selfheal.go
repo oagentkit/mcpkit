@@ -72,10 +72,11 @@ type selfHealTool struct {
 	mu sync.Mutex
 	// inner 当前装配代工具（errorAsObservation 包装，底层绑某代连接）。
 	inner tool.InvokableTool
-	// redial 重连闭包（Pool 提供）。dead 连接由本工具在 redial 时刻经
-	// currentClient() 从当前 inner 解析后传入（oagentkit/mcpkit#88）——闭包
+	// redial 重连闭包（Pool 提供）。dead 连接由本工具在 InvokableRun 入口快照
+	// inner 后经 clientOf(inner) 解析传入（oagentkit/mcpkit#88 #99）——闭包
 	// 不得固化装配代连接，否则 swapInner 换代后比对基准过时，第二代断连
-	// 恒跳过 evict、死连接永驻缓存。
+	// 恒跳过 evict、死连接永驻缓存；也不得在 redial 时刻重解析 currentInner，
+	// 否则跨并发换代窗口基准漂移到别的自愈刚换上的健康连接（误杀在用连接）。
 	redial func(ctx context.Context, dead client.MCPClient) (tool.InvokableTool, error)
 }
 
@@ -101,7 +102,14 @@ func (t *selfHealTool) currentInner() tool.InvokableTool {
 // 本工具上失败的那条连接」，而非装配期固化的某一代。链上无连接暴露面（测试桩/
 // 外部实现）返回 nil：redial 侧对 nil dead 跳过实例比对，直接走建连单飞。
 func (t *selfHealTool) currentClient() client.MCPClient {
-	if c, ok := t.currentInner().(mcpClienter); ok {
+	return clientOf(t.currentInner())
+}
+
+// clientOf 参数化形态的连接解析（oagentkit/mcpkit#99）：从**给定** inner 解析
+// 底层连接，不重读 currentInner——InvokableRun 的调用与 dead 基准必须同源同代。
+// 链上无连接暴露面（测试桩/外部实现）返回 nil。
+func clientOf(inner tool.InvokableTool) client.MCPClient {
+	if c, ok := inner.(mcpClienter); ok {
 		return c.mcpClient()
 	}
 	return nil
@@ -129,11 +137,19 @@ func (t *selfHealTool) OutputSchema() json.RawMessage {
 }
 
 func (t *selfHealTool) InvokableRun(ctx context.Context, args string, opts ...tool.Option) (string, error) {
-	out, err := t.currentInner().InvokableRun(ctx, args, opts...)
+	// 入口单次快照（oagentkit/mcpkit#99）：调用与 dead 基准必须用**同一份**
+	// inner——此前这里调 inner 取 currentInner() 一次、redial 基准经
+	// currentClient() 再取一次，两取之间跨并发换代窗口（G1 完成 evict→建连→
+	// swapInner）时基准漂移到 G1 刚换上的健康连接 C2：selfHealRedial 的
+	// cached == dead 命中 ⇒ 在用健康连接被逐出（正值在用）。快照后 G2 的
+	// dead = 快照代 C1 ≠ cached(C2) ⇒ 跳过 evict ⇒ p.client 快路径命中健康
+	// 连接重试，语义对齐 #88 注释「基准必须是刚在本工具上失败的那条连接」。
+	inner := t.currentInner()
+	out, err := inner.InvokableRun(ctx, args, opts...)
 	if err == nil || !isTransportDead(err) {
 		return out, err
 	}
-	fresh, ferr := t.redial(ctx, t.currentClient())
+	fresh, ferr := t.redial(ctx, clientOf(inner))
 	if ferr != nil {
 		// %w 保链：OAuth 401 等可行动确定态须可被 errors.As 穿透（自愈重连
 		// 撞上授权失效时，调用方要能拿到「需重新授权」而非笼统失败）
