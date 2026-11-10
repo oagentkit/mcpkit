@@ -95,16 +95,14 @@ func mcpErrorObservation(err error) (string, bool) {
 	return "MCP 工具执行失败（真实工具反馈）：\n" + msg, true
 }
 
-// observationFromPayload 从 CallToolResult JSON 剥首条 text 作为 LLM 可读观察。
+// observationFromPayload 从 CallToolResult JSON 剥文本作为 LLM 可读观察。
+// 提取单源 envelopeTextOf（与 unwrap.go 成功路径同口径，mcpkit#111）：逐块找
+// text、回落 structuredContent、无可提取给占位——不再「剥首块的 text 字段」
+// （首块是 image/audio/resource 时产出空观察，自纠话术变成信封说谎）。
 func observationFromPayload(payload []byte) string {
-	var m struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if json.Unmarshal(payload, &m) == nil && len(m.Content) > 0 {
+	if text, ok := envelopeTextOf(string(payload)); ok {
 		return "MCP 工具执行失败（真实工具反馈，请据此修正参数、先列出存在的资源再取详情，或改用其他工具；不要重复同一调用）：\n" +
-			m.Content[0].Text
+			text
 	}
 	return "MCP 工具执行失败（真实工具反馈）：\n" + string(payload)
 }

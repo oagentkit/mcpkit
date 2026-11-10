@@ -14,7 +14,8 @@ import (
 
 // SelfcheckOptions 自检参数。
 type SelfcheckOptions struct {
-	// Server server 名（结果标识 + 缓存键）。
+	// Server server 名（结果标识；缓存键 = 名 + 声明面指纹，
+	// 见 selfcheckCacheKey——mcpkit#109/#113）。
 	Server string
 	// Timeout 单次探测的超时预算（默认 10s）。
 	Timeout time.Duration
@@ -169,9 +170,14 @@ func (s *Selfchecker) Check(ctx context.Context, cli client.MCPClient, opts Self
 	}
 
 	// 缓存命中：直接返回（连通性结论也一并复用——TTL 内的目录视为静态）。
+	// 键 = server 名 + **声明面指纹**（mcpkit#109/#113）：结果里的 Tools/Diff/
+	// Expected/逐工具探活结论都是按本次 opts 声明面派生的，键只有 server 名
+	// 会让 TTL 内第二个调用方（不同 Expected/ProbeTools/ProbeArgs）拿到
+	// 第一家的结论还带 Cached=true 背书。
 	if opts.TTL > 0 {
+		key := selfcheckCacheKey(opts)
 		s.mu.Lock()
-		e, ok := s.cache[opts.Server]
+		e, ok := s.cache[key]
 		s.mu.Unlock()
 		if ok && now().Before(e.expire) {
 			r := e.result
@@ -186,14 +192,42 @@ func (s *Selfchecker) Check(ctx context.Context, cli client.MCPClient, opts Self
 	// 30s = 恢复不被感知、在线自检命中 down 陈旧结论。目录（reachable 时）
 	// 才享受 TTL 静态假设。
 	if opts.TTL > 0 && res.Reachable {
+		key := selfcheckCacheKey(opts)
 		s.mu.Lock()
 		if s.cache == nil {
 			s.cache = map[string]selfcheckEntry{}
 		}
-		s.cache[opts.Server] = selfcheckEntry{result: res, expire: res.At.Add(opts.TTL)}
+		// 顺带清过期条目：键带声明面指纹后同 server 可有多条（不同调用方
+		// 不同 Expected），不做惰性清理缓存会随指纹组合无限增长。
+		t := now()
+		for k, e := range s.cache {
+			if t.After(e.expire) {
+				delete(s.cache, k)
+			}
+		}
+		s.cache[key] = selfcheckEntry{result: res, expire: res.At.Add(opts.TTL)}
 		s.mu.Unlock()
 	}
 	return res
+}
+
+// selfcheckCacheKey TTL 缓存键：server 名 + 声明面指纹（Expected / ProbeTools /
+// ProbeArgs / Initialize——都会改变派生判定或连通结论）。json.Marshal 对
+// struct 字段序固定、map 键排序，指纹确定；键带 NUL 分隔防名与指纹拼接歧义。
+func selfcheckCacheKey(opts SelfcheckOptions) string {
+	fp, err := json.Marshal(struct {
+		Expected   Catalog
+		ProbeTools bool
+		ProbeArgs  map[string]any
+		Initialize bool
+	}{opts.Expected, opts.ProbeTools, opts.ProbeArgs, opts.Initialize})
+	if err != nil {
+		// Expected/ProbeArgs 含不可序列化项时退化为稳定可读形态（仍区分
+		// ProbeTools/Initialize 两个布尔面）。
+		return opts.Server + "\x00<unserializable>" +
+			fmt.Sprint(opts.ProbeTools) + fmt.Sprint(opts.Initialize)
+	}
+	return opts.Server + "\x00" + string(fp)
 }
 
 // probe 实拉目录 + 探活 + 逐工具核状态。
@@ -322,13 +356,16 @@ func probeTool(ctx context.Context, cli client.MCPClient, name string, args map[
 		return err
 	}
 	if res != nil && res.IsError {
-		payload := ""
-		if len(res.Content) > 0 {
-			if tc, ok := res.Content[0].(mcp.TextContent); ok {
-				payload = tc.Text
-			}
+		// payload 存**完整 CallToolResult 信封**（mcpkit#110/#112）：与
+		// catalog.go 正常路径同形态——此前存 content[0] 裸文本，同名
+		// ToolResultError 三种 payload 形态并存（信封/裸文本/空串），按契约
+		// 解析信封的消费方对后两种静默拿空。json.Marshal 对 mark3labs 信封
+		// 总能成功（Content 各实现都带 JSON tag），失败分支仅为防御。
+		b, merr := json.Marshal(res)
+		if merr != nil {
+			return fmt.Errorf("mcp: 探测工具 %s 返回 isError 且信封序列化失败: %w", name, merr)
 		}
-		return &ToolResultError{payload: []byte(payload)}
+		return &ToolResultError{payload: b}
 	}
 	return nil
 }
