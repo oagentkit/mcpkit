@@ -2,6 +2,43 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.12.8] — 2026-11-10
+
+### 修复(mcp)：PingServer legacy 分支探活补齐目录指纹比对，对齐 modern 口径（#100）
+
+legacy（≤2025-11-25）代际连接的探活此前只 ping 不比对 catalog 指纹：探活
+成功即 touch 续命，探活周期 < maxIdle（或未起闲置回收）时连接永不回收、
+catalogFor 缓存优先，server 工具面/schema 变化整个连接生命周期不可见——
+正是 modern 分支注释里记载、#53 修复过的失败模式，只是没覆盖 legacy 代际。
+修法（对齐主流路径，非退役——modern/legacy 按建连协商分流、无切换开关，
+legacy 代际仍是受支持的连接类别）：
+- legacy 分支 ping 证活后补一发 tools/list，走 refreshCatalogIfChanged
+  同口径比对指纹，变化即失效缓存（下次 catalogFor 重列全量转换）；
+- 列举失败随探活失败同路径处理：本地取消豁免保留连接，其余摘除、
+  下次调用透明重建——与现代分支「列举失败即摘除」语义一致；
+- PingServer godoc 声明两代际指纹比对对称不变量（此前不对称未声明）。
+测试（先红后绿）：
+- TestLegacyProbeRefreshesCatalogOnFingerprintChange：issue 探针复现——
+  注入 legacy 连接 + server 增工具 b，三次连续探活首次即失效缓存，
+  下次 Tools 重列可见 2 工具；
+- TestLegacyProbeListFailureEvicts：锚定 ping 过但列举失败仍摘除连接。
+Closes oagentkit/mcpkit#100
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.31.2
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/concurrency` | `v0.31.1` | `v0.31.2` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+
 ## [v0.12.7] — 2026-11-10
 
 ### 修复(mcp)：selfHeal 入口单次快照 inner，并发自愈不再误杀健康连接（#99）
