@@ -2,6 +2,41 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.12.9] — 2026-11-11
+
+### 修复(mcp)：四组清零——缓存键声明面指纹、探针 payload 信封、错误观察剥壳单源、空名引用哨兵（#109-#114）
+
+* fix(mcp): 四组清零——缓存键声明面指纹、探针 payload 信封、错误观察剥壳单源、空名引用哨兵（#109 #110 #111 #112 #113 #114）
+- #109/#113 Selfchecker TTL 缓存键 = server 名 + 声明面指纹（Expected /
+  ProbeTools / ProbeArgs / Initialize）——不同声明面的调用方不再拿到第一家
+  的派生判定（Tools/Diff/逐工具结论）还带 Cached=true 背书；存入时惰性
+  清过期条目，指纹组合不再导致缓存无界增长
+- #110/#112 probeTool isError 的 payload 存完整 CallToolResult 信封（json
+  .Marshal），与 catalog.go 正常路径同形态——同名 ToolResultError 三种
+  payload 形态收口为一种；selfcheck_test 的 payload 构造同步换信封形态
+- #111 observationFromPayload 提取收口单源 envelopeTextOf（unwrap.go 同源）：
+  逐块找 text、回落 structuredContent、无可提取给占位——首块非文本不再
+  产出空壳观察（自纠话术不再信封说谎）
+- #114 Pool.Tools「未命中」改独立下标哨兵 missingIdx——spec.Server=="" 的
+  未配置引用显式报错，不再静默跳过校验流到 stdio/http 前置校验报错因
+测试 4 条回归用例按 issue 号命名；go test -race 全绿。
+* style: gofmt（issue_sweep_test.go 结构体字面量对齐）
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.32.0
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/concurrency` | `v0.31.2` | `v0.32.0` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+
 ## [v0.12.8] — 2026-11-10
 
 ### 修复(mcp)：PingServer legacy 分支探活补齐目录指纹比对，对齐 modern 口径（#100）
@@ -147,20 +182,6 @@ Merge branch 'main' into fix/audit-issues-76-75
 
 
 ## [v0.12.2] — 2026-11-08
-
-- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.28.4
-
-| 依赖 | 现地板 | 抬到 |
-|---|---|---|
-| `github.com/oekit/concurrency` | `v0.28.3` | `v0.28.4` |
-## 为什么
-矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
-（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
-oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
-## 兼容性实测
-本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
-与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
-只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
 
 - 杂务(deps)：依赖地板追平 oekit BOM v0.2.9——pkg v0.37.4 / logx v0.8.10 / concurrency v0.28.4
 
