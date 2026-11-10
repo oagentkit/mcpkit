@@ -59,7 +59,7 @@ func TestSelfcheckCacheKeyIncludesDeclaration_Issue109_113(t *testing.T) {
 	// ProbeTools 翻转也换键：探过与没探过的结论不可混用。
 	fourth := sc.Check(ctx, cli, SelfcheckOptions{
 		Server: "srv", TTL: time.Minute,
-		Expected:  NewCatalog("srv", []string{"write"}),
+		Expected:   NewCatalog("srv", []string{"write"}),
 		ProbeTools: true,
 	})
 	if fourth.Cached {
