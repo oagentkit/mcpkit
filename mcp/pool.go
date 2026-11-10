@@ -308,21 +308,24 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) (ToolsResult, error)
 	// 先全量校验：配置错误是调用方 bug，不应半路并行半路报错。
 	// cfgs 读持 p.mu（与其余读路径同纪律——当前生产无写者，但任何未来的
 	// 配置更新 API 都不应把这里变成 data race）
+	// 「未命中」用独立下标哨兵（mcpkit#114）：空串兼作「无缺失」哨兵时，
+	// spec.Server=="" 的未配置引用会静默跳过校验，零值 cfg 流到 stdio/http
+	// 前置校验，报出与真因（名字填空了）无关的错误。
 	p.mu.Lock()
-	var missing string
+	missingIdx := -1
 	cfgs := make([]ServerConfig, len(specs))
 	for i, spec := range specs {
 		cfg, ok := p.cfgs[spec.Server]
 		if !ok {
-			missing = spec.Server
+			missingIdx = i
 			break
 		}
 		cfgs[i] = cfg
 	}
 	p.mu.Unlock()
-	if missing != "" {
+	if missingIdx >= 0 {
 		return ToolsResult{}, fmt.Errorf("mcp: ToolSpec 引用未配置的 server %q（已配置: %v）",
-			missing, p.Servers())
+			specs[missingIdx].Server, p.Servers())
 	}
 	// stdio/http 二选一前置校验（第九轮挂账落地）：此前要到 dial 期才暴露，
 	// 经 OnError 容忍后难以排查；配置错误在这里一次性显式报出

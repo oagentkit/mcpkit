@@ -37,6 +37,9 @@ type scriptedClient struct {
 	tools []string
 	// callErrs 工具名 → 调用错误（nil = 调用成功）。
 	callErrs map[string]error
+	// callResults 工具名 → 直接返回的 CallToolResult（优先于 callErrs；
+	// 编排「业务失败 isError:true」形态——mcpkit#110/#112 信封 payload 用）。
+	callResults map[string]*mcp.CallToolResult
 	// callCount 统计 CallTool 次数。
 	callCount int
 	// listCount 统计 ListTools 次数。
@@ -72,6 +75,9 @@ func (c *scriptedClient) ListTools(context.Context, mcp.ListToolsRequest) (*mcp.
 
 func (c *scriptedClient) CallTool(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	c.callCount++
+	if res, ok := c.callResults[req.Params.Name]; ok && res != nil {
+		return res, nil
+	}
 	if err, ok := c.callErrs[req.Params.Name]; ok && err != nil {
 		return nil, err
 	}
@@ -141,14 +147,20 @@ func TestClassifyDistinguishesMissingFromInvalidArgs(t *testing.T) {
 }
 
 // TestClassifyToolResultPayload isError:true 的 payload 文本判别。
+// payload 用**信封形态**构造（mcpkit#110/#112：ToolResultError.payload 的包内
+// 契约是 marshaled CallToolResult——此前用裸 JSON 文本构造，契约漂移在测试里
+// 固化；分类按子串匹配，信封里的 text 原文照常命中）。
 func TestClassifyToolResultPayload(t *testing.T) {
+	envelope := func(text string) string {
+		return `{"content":[{"type":"text","text":"` + text + `"}],"isError":true}`
+	}
 	cases := []struct {
 		payload string
 		want    ErrorKind
 	}{
-		{"{\"error\":\"tool not found: read\"}", KindToolMissing},
-		{"{\"error\":\"invalid params: missing required field\"}", KindInvalidArgs},
-		{"{\"error\":\"some other business failure\"}", KindProtocol},
+		{envelope("tool not found: read"), KindToolMissing},
+		{envelope("invalid params: missing required field"), KindInvalidArgs},
+		{envelope("some other business failure"), KindProtocol},
 	}
 	for _, c := range cases {
 		got := ClassifyError(&ToolResultError{payload: []byte(c.payload)})
