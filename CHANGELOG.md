@@ -22,6 +22,7 @@
 测试 4 条回归用例按 issue 号命名；go test -race 全绿。
 * style: gofmt（issue_sweep_test.go 结构体字面量对齐）
 
+- 杂务(deps)：依赖地板追到最新——guardx v0.24.2 / textx v0.10.8 / runtime v0.12.7（2026-11-11 列车）
 - 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.33.0
 
 | 依赖 | 现地板 | 抬到 |
