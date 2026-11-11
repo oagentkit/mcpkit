@@ -2,6 +2,10 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.13.2] — 2026-11-12
+
+- 杂务(modernize)：sort.* → slices.*/min-max 内建——吃 Go 1.21+ 标准库，零行为变化
+
 ## [v0.13.1] — 2026-11-11
 
 - 杂务(deps)：依赖地板追到最新——github.com/oagentkit/runtime v0.12.8
