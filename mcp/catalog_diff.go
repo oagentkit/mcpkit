@@ -1,6 +1,6 @@
 package mcp
 
-import "sort"
+import "slices"
 
 // Catalog 工具面快照：某个 server（或一组 server）实际提供的工具清单。
 //
@@ -28,18 +28,13 @@ func NewCatalog(server string, tools []string) Catalog {
 		seen[t] = struct{}{}
 		out = append(out, t)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return Catalog{Server: server, Tools: out}
 }
 
 // Contains 目录是否含某工具。
 func (c Catalog) Contains(name string) bool {
-	for _, t := range c.Tools {
-		if t == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.Tools, name)
 }
 
 // CatalogDiff 双向差集结果。
@@ -81,8 +76,8 @@ func Diff(expected, actual Catalog) CatalogDiff {
 			d.Extra = append(d.Extra, t)
 		}
 	}
-	sort.Strings(d.Missing)
-	sort.Strings(d.Extra)
+	slices.Sort(d.Missing)
+	slices.Sort(d.Extra)
 	return d
 }
 

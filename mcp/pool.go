@@ -26,7 +26,7 @@ import (
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/concurrency/fanout"
 	"os/exec"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -125,12 +125,7 @@ func (s ToolSpec) grantsAll() bool {
 	if s.AllowAll {
 		return true
 	}
-	for _, n := range s.Allow {
-		if n == allowAllWildcard {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.Allow, allowAllWildcard)
 }
 
 // Pool MCP 连接池：lazy 建连（首次 Tools 时）、连接缓存复用、Close 全量回收。
@@ -274,7 +269,7 @@ func (p *Pool) Servers() []string {
 	for n := range p.cfgs {
 		names = append(names, n)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 

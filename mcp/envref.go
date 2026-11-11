@@ -5,7 +5,7 @@ package mcp
 
 import (
 	"os"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -59,6 +59,6 @@ func sortedEnvNames(m map[string]struct{}) []string {
 	for k := range m {
 		out = append(out, k)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

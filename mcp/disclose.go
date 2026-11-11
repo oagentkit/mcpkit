@@ -11,7 +11,7 @@ package mcp
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -279,7 +279,7 @@ func (g *DisclosureGate) Loaded() []string {
 	for n := range g.loaded {
 		out = append(out, n)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 

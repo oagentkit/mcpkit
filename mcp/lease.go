@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -152,7 +152,7 @@ func probeFingerprint(tools []mcp.Tool) string {
 		b, _ := json.Marshal(t.InputSchema)
 		pairs[i] = t.Name + "\x00" + string(b)
 	}
-	sort.Strings(pairs)
+	slices.Sort(pairs)
 	return strconv.Itoa(len(tools)) + "|" + strings.Join(pairs, "|")
 }
 
