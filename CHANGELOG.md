@@ -2,6 +2,14 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.13.0] — 2026-11-11
+
+### 修复(mcp)：probeFingerprint 改 per-tool 配对指纹（#118）
+
+names 与 schemas 各自独立排序丢失配对关系——两工具 schema 互换时指纹不变，
+热更新不可见、缓存继续发旧 schema 绑定。改 name+\\x00+schema 成对拼串后
+整体排序（\\x00 不在合法工具名/schema 里，"," join 的构造碰撞一并封死）。
+
 ## [v0.12.9] — 2026-11-11
 
 ### 修复(mcp)：四组清零——缓存键声明面指纹、探针 payload 信封、错误观察剥壳单源、空名引用哨兵（#109-#114）
