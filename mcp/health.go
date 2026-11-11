@@ -1,8 +1,9 @@
 package mcp
 
 import (
+	"cmp"
 	"encoding/json"
-	"sort"
+	"slices"
 )
 
 // HealthState 健康三态。
@@ -168,13 +169,13 @@ func Aggregate(results []SelfcheckResult) Health {
 		}
 	}
 
-	sort.Strings(servers)
+	slices.Sort(servers)
 	h.Servers = servers
-	sort.Slice(issues, func(i, j int) bool {
-		if issues[i].Server != issues[j].Server {
-			return issues[i].Server < issues[j].Server
+	slices.SortFunc(issues, func(a, b HealthIssue) int {
+		if c := cmp.Compare(a.Server, b.Server); c != 0 {
+			return c
 		}
-		return issues[i].Tool < issues[j].Tool
+		return cmp.Compare(a.Tool, b.Tool)
 	})
 	h.Issues = issues
 

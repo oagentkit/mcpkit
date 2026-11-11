@@ -1,10 +1,11 @@
 package mcp
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -333,7 +334,7 @@ func (s *Selfchecker) probe(ctx context.Context, cli client.MCPClient, opts Self
 		}
 		res.Tools = append(res.Tools, ToolCheck{Tool: n, Status: ToolOK})
 	}
-	sort.Slice(res.Tools, func(i, j int) bool { return res.Tools[i].Tool < res.Tools[j].Tool })
+	slices.SortFunc(res.Tools, func(a, b ToolCheck) int { return cmp.Compare(a.Tool, b.Tool) })
 	res.Diff = Diff(opts.Expected, res.Catalog)
 	return res
 }
