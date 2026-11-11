@@ -142,16 +142,18 @@ func (p *Pool) refreshCatalogIfChanged(name string, tools []mcp.Tool) {
 // 同工具面不得触发缓存失效（否则探活周期驱动 tools/list 风暴，打破「连接时
 // 一次列举」不变量）。
 func probeFingerprint(tools []mcp.Tool) string {
-	names := make([]string, len(tools))
-	schemas := make([]string, len(tools))
+	// per-tool 配对指纹（mcpkit#118）：names 与 schemas 此前**各自独立排序**
+	// ——配对关系丢失，两工具 schema 互换时指纹不变（{a:X,b:Y} 与 {a:Y,b:X}
+	// 同指纹 ⇒ 热更新不可见，缓存继续发旧 schema 绑定）。改为 name+\x00+
+	// schema 成对拼串后整体排序；\x00 不会出现在合法工具名/schema JSON 里
+	//（此前 "," join 可被含逗号名构造碰撞）。
+	pairs := make([]string, len(tools))
 	for i, t := range tools {
-		names[i] = t.Name
 		b, _ := json.Marshal(t.InputSchema)
-		schemas[i] = string(b)
+		pairs[i] = t.Name + "\x00" + string(b)
 	}
-	sort.Strings(names)
-	sort.Strings(schemas)
-	return strconv.Itoa(len(tools)) + "|" + strings.Join(names, ",") + "|" + strings.Join(schemas, ",")
+	sort.Strings(pairs)
+	return strconv.Itoa(len(tools)) + "|" + strings.Join(pairs, "|")
 }
 
 func probeFingerprintOfEntries(entries []toolEntry) string {
