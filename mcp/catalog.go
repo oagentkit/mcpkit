@@ -109,7 +109,12 @@ func listTools(ctx context.Context, cli client.MCPClient, tr transport.Interface
 //
 // 白名单可写**原始工具名**（server 内）或**带 server 的全名**（"server.tool"）——
 // 两种写法都命中（下游配置里两种都常见；跨 server 同名时只有全名是确定的）。
-func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bool, server string, textResult bool) []tool.BaseTool {
+//
+// 入参 schema 转换失败 ⇒ 整批返回 error（oagentkit/mcpkit#134，对齐 eino-ext
+// v0.0.9 GetTools 的硬失败口径）：坏 schema 不得让该 server 的工具面带着
+// 「接受任意参数」的假契约悄悄上模型——失败由调用方汇入 Pool.Tools 的 Failed
+// 面并经 OnError 发射，而不是静默出一批零约束工具。
+func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bool, server string, textResult bool) ([]tool.BaseTool, error) {
 	want := map[string]struct{}{}
 	for _, n := range allow {
 		if n == allowAllWildcard {
@@ -122,9 +127,13 @@ func convTools(cli client.MCPClient, entries []toolEntry, allow []string, all bo
 		if !all && !toolAllowed(e, want, server) {
 			continue
 		}
-		out = append(out, convTool(cli, e, server, textResult))
+		t, err := convTool(cli, e, server, textResult)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
 	}
-	return out
+	return out, nil
 }
 
 // toolAllowed 该目录条目是否命中白名单（原始名或带 server 的全名）。
@@ -152,23 +161,36 @@ func qualifiedName(server, name string) string {
 }
 
 // convTool 单条目录 → eino 可调用工具。转换口径与 eino-ext components/tool/mcp
-// v0.0.9 GetTools 一致：InputSchema → JSON Schema → ParamsOneOf。isError:true 的
+// v0.0.9 GetTools 一致：InputSchema → JSON Schema → ParamsOneOf——**转换失败
+// 返回 error**（同 eino-ext 的硬失败；mcpkit#134：此前吞错把零值 schema 序列化成
+// JSON Schema `true`，模型面拿到「接受任意实例」的假契约）。isError:true 的
 // 降级由上层 WrapErrorAsObservation 承担——其识别锚点是错误文本
 // "mcp server return error"，勿改动该文案（类型化 toolResultError 的 Error()
 // 仍输出此文案；改文案须同步 observe 兜底与测试锚点）。
-func convTool(cli client.MCPClient, e toolEntry, server string, textResult bool) tool.BaseTool {
+func convTool(cli client.MCPClient, e toolEntry, server string, textResult bool) (tool.BaseTool, error) {
 	return newInvokableTool(cli, e, qualifiedName(server, e.tool.Name), nil, textResult)
 }
 
 // newInvokableTool 装配可调用工具；exposed 为暴露给模型的工具名（带 server 命名空间）；
 // lease 非 nil 时调用期登记在途（闲置回收跳过）；textResult 语义见 Pool.TextResult。
-func newInvokableTool(cli client.MCPClient, e toolEntry, exposed string, lease func() func(), textResult bool) tool.BaseTool {
+//
+// 入参 schema 的 Marshal/Unmarshal 失败显式返回 error（oagentkit/mcpkit#134，
+// AGENTS.md「所有 error 禁止 _ 忽略」）：此前两处 `_ =` 吞错 ⇒ inputSchema 保持
+// 零值 ⇒ 序列化成 JSON Schema 布尔 `true`（接受任意实例）——server 侧声明的
+// 必填参数约束在 client 侧整个消失，且列举零报错。eino-ext 同一处是硬失败。
+func newInvokableTool(cli client.MCPClient, e toolEntry, exposed string, lease func() func(), textResult bool) (tool.BaseTool, error) {
 	inputSchema := &jsonschema.Schema{}
 	inputRaw := e.rawInput
 	if len(inputRaw) == 0 {
-		inputRaw, _ = json.Marshal(e.tool.InputSchema)
+		var merr error
+		inputRaw, merr = json.Marshal(e.tool.InputSchema)
+		if merr != nil {
+			return nil, fmt.Errorf("mcp: 工具 %s 入参 schema 序列化失败: %w", e.tool.Name, merr)
+		}
 	}
-	_ = json.Unmarshal(inputRaw, inputSchema)
+	if uerr := json.Unmarshal(inputRaw, inputSchema); uerr != nil {
+		return nil, fmt.Errorf("mcp: 工具 %s 入参 schema 解析失败: %w", e.tool.Name, uerr)
+	}
 	return &invokableTool{
 		cli:          cli,
 		lease:        lease,
@@ -182,7 +204,7 @@ func newInvokableTool(cli client.MCPClient, e toolEntry, exposed string, lease f
 			Desc:        e.tool.Description,
 			ParamsOneOf: schema.NewParamsOneOfByJSONSchema(inputSchema),
 		},
-	}
+	}, nil
 }
 
 // invokableTool eino 可调用工具（eino-ext toolHelper 的等价自持版；调用请求构造
