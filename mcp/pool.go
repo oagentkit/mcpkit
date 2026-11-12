@@ -288,9 +288,11 @@ type ToolsResult struct {
 	// 它是「工具归属」的结构化面——不让调用方靠位置假设（res.Tools[0]）去猜
 	// 某个工具来自哪个 server。空 = 没有工具。
 	ByServer map[string][]tool.BaseTool
-	// Failed server → 被容忍的失败原因（建连/列举失败、白名单无一命中）。
-	// 失败连接已摘除，下次调用透明重建。空 = 全部成功。OnError 仍发射同源
-	// 通知（遥测钩子），失败面的程序化消费一律走这里。
+	// Failed server → 被容忍的失败原因（建连/列举失败、白名单无一命中、
+	// 入参 schema 转换失败——mcpkit#134）。建连/列举失败的连接已摘除，下次
+	// 调用透明重建；schema 转换失败是 server 声明面本身的坏（目录照常缓存，
+	// 每次装配同错），不摘连接。空 = 全部成功。OnError 仍发射同源通知
+	// （遥测钩子），失败面的程序化消费一律走这里。
 	Failed map[string]error
 }
 
@@ -509,7 +511,14 @@ func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec
 	if len(spec.Allow) == 0 && !spec.grantsAll() {
 		p.notifyWarn(cfg.Name, "spec 既无 Allow 也未 AllowAll：该 server 授予 0 个工具（deny by default）；确认是本意请写 AllowAll: true")
 	}
-	tools := p.assembleTools(cfg, spec, cli, entries)
+	tools, aerr := p.assembleTools(cfg, spec, cli, entries)
+	if aerr != nil {
+		// 入参 schema 转换失败（mcpkit#134）：坏 schema 不得带零约束假契约上
+		// 模型面——与建连/列举失败同处置：OnError 发射 + 记入 Failed，该
+		// server 的工具面整体不暴露（对齐 eino-ext 硬失败口径）。
+		p.notifyError(cfg.Name, aerr)
+		return nil, aerr
+	}
 	// Allow 白名单全部未命中（拼写错误等）：转换层静默返回空表——经 OnError
 	// 告警并记入 Failed，避免 agent 拿到空工具表却无从排查
 	// （显式「全给」时不算：一台没有工具的 server 就是 0 个，不是白名单打错）
@@ -526,15 +535,21 @@ func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec
 // convTools——lease 注入漏迁移，自愈重试期间 inFlight==0，重试时长超过
 // maxIdle 时连接可被闲置回收（第六轮审计）。leaseUse 是唯一带 lease 的装配点，
 // 双路径手工对齐的漂移面就此消除。
-func (p *Pool) assembleTools(cfg ServerConfig, spec ToolSpec, cli client.MCPClient, entries []toolEntry) []tool.BaseTool {
-	tools := convTools(cli, entries, spec.Allow, spec.grantsAll(), cfg.Name, p.TextResult)
+//
+// 入参 schema 转换失败返回 error（mcpkit#134）：整批不装配——调用方按
+// 既有失败面处置（初始装配记入 Failed + OnError；redial 直接回错）。
+func (p *Pool) assembleTools(cfg ServerConfig, spec ToolSpec, cli client.MCPClient, entries []toolEntry) ([]tool.BaseTool, error) {
+	tools, err := convTools(cli, entries, spec.Allow, spec.grantsAll(), cfg.Name, p.TextResult)
+	if err != nil {
+		return nil, err
+	}
 	lease := p.leaseUse(cfg.Name)
 	for _, t := range tools {
 		if it, ok := t.(*invokableTool); ok {
 			it.lease = lease
 		}
 	}
-	return tools
+	return tools, nil
 }
 
 // wrapSelfHeal 调用期自愈（批次五十）：自愈层在最外（传输层死亡重连重试），

@@ -186,7 +186,13 @@ func (p *Pool) selfHealRedial(cfg ServerConfig, spec ToolSpec, name string) func
 		if err != nil {
 			return nil, err
 		}
-		for _, t := range WrapErrorAsObservation(p.assembleTools(cfg, spec, cli, entries)) {
+		tools, aerr := p.assembleTools(cfg, spec, cli, entries)
+		if aerr != nil {
+			// 入参 schema 转换失败（mcpkit#134）：重装配同样硬失败——比
+			// 「重连后未找到工具」更准的归因（工具在目录里，是它的 schema 坏了）。
+			return nil, aerr
+		}
+		for _, t := range WrapErrorAsObservation(tools) {
 			if it, ok := t.(tool.InvokableTool); ok {
 				if info, ierr := it.Info(ctx); ierr == nil && info.Name == name {
 					return it, nil

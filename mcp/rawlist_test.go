@@ -105,7 +105,10 @@ func TestRawToolsListFidelity(t *testing.T) {
 	}
 
 	// 目录条目 → invokableTool → 可选接口读取
-	inv := newInvokableTool(cli, entries[0], entries[0].tool.Name, nil, false)
+	inv, ierr := newInvokableTool(cli, entries[0], entries[0].tool.Name, nil, false)
+	if ierr != nil {
+		t.Fatalf("正常 schema 不应转换失败: %v", ierr)
+	}
 	got, ok := OutputSchemaOf(inv)
 	if !ok || !strings.Contains(string(got), `"anyOf"`) {
 		t.Errorf("invokableTool outputSchema 异常: %s", got)
@@ -132,7 +135,11 @@ func TestListToolsTypedFallback(t *testing.T) {
 	if len(entries[0].outputSchema) != 0 {
 		t.Errorf("typed 回退不应带 outputSchema（有损）: %s", entries[0].outputSchema)
 	}
-	if _, ok := OutputSchemaOf(newInvokableTool(cli, entries[0], entries[0].tool.Name, nil, false)); ok {
+	typedInv, tErr := newInvokableTool(cli, entries[0], entries[0].tool.Name, nil, false)
+	if tErr != nil {
+		t.Fatalf("正常 schema 不应转换失败: %v", tErr)
+	}
+	if _, ok := OutputSchemaOf(typedInv); ok {
 		t.Error("typed 回退工具不应声明 OutputSchemer 能力")
 	}
 }
