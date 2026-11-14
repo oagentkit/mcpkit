@@ -161,6 +161,10 @@ type Pool struct {
 	baseCancel context.CancelFunc
 	// OnError 建连/列举失败回调（nil 安全）。返回错误不中断其余 server——
 	// 部分失败容忍：可用的工具照常返回，失败的 server 由调用方经钩子观测。
+	// 语义面：**只发真失败**——闲置回收是设计内行为（被回收的 server 下次
+	// 调用透明重建，ReapIdle doc），不经本回调（oagentkit/mcpkit#149：此前
+	// 借道 OnError，按失败率消费的宿主错误面被设计内事件灌满）；回收观测走
+	// OnReap。
 	OnError func(server string, err error)
 	// RequestMeta 每笔工具调用 _meta 注入来源（nil 安全；批次五十六 B，对标 ZCode
 	// request-context）。metaFn 在调用方 ctx 上取值，池不感知业务键；经 metaClient
@@ -176,6 +180,13 @@ type Pool struct {
 	// 升级后静默「能对话但无工具可调」。告警点名 server 与后果；与 OnError
 	// 同一串行化纪律。
 	OnWarn func(server, msg string)
+	// OnReap 闲置回收回调（nil 安全；oagentkit/mcpkit#149）：ReapIdle/
+	// StartIdleReaper 回收闲置连接时发射（idle = 触发回收的闲置阈值）。
+	// 回收是**设计内行为**（下次调用透明重建，非失败），与 OnError（真失败）
+	// 分通道——按失败率消费 OnError 的宿主不再被回收事件灌满错误面；想观测
+	// 回收节奏（调 maxIdle/interval）的宿主用本通道。与 OnError/OnWarn 同一
+	// errMu 串行化纪律。
+	OnReap func(server string, idle time.Duration)
 	// TextResult 工具调用结果剥壳（oagentkit/mcpkit#39）：true 时 InvokableRun
 	// 返回剥壳后的**文本内容**（UnwrapMCPText：content[].text 优先，回落
 	// structuredContent）而非完整 CallToolResult JSON 信封——宿主把返回值
@@ -593,6 +604,17 @@ func (p *Pool) notifyError(server string, err error) {
 	p.errMu.Lock()
 	defer p.errMu.Unlock()
 	p.OnError(server, err)
+}
+
+// notifyReap 串行化 OnReap（与 OnError/OnWarn 同一 errMu 并发纪律）。
+// 闲置回收经本通道发射（oagentkit/mcpkit#149）：设计内行为不污染错误面。
+func (p *Pool) notifyReap(server string, idle time.Duration) {
+	if p.OnReap == nil {
+		return
+	}
+	p.errMu.Lock()
+	defer p.errMu.Unlock()
+	p.OnReap(server, idle)
 }
 
 // client 获取（lazy 建连 + 缓存）。失败时不缓存——下次调用重试。

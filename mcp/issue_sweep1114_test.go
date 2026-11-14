@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -394,7 +395,7 @@ func TestRegisterConnClearsLeftoverCatalog_Issue146(t *testing.T) {
 // 判 healthy 会让巡检脚本/上游过滤故障静默变绿——oagentkit/mcpkit#147。
 func TestAggregateEmptyInputIsUnknown_Issue147(t *testing.T) {
 	for name, in := range map[string][]SelfcheckResult{
-		"nil":  nil,
+		"nil":   nil,
 		"empty": {},
 	} {
 		h := Aggregate(in)
@@ -409,5 +410,50 @@ func TestAggregateEmptyInputIsUnknown_Issue147(t *testing.T) {
 	h := Aggregate([]SelfcheckResult{{Server: "srv", Reachable: true}})
 	if h.State != HealthHealthy {
 		t.Fatalf("单 server 全绿应仍判 healthy, got %s", h.State)
+	}
+}
+
+// ---------------------------------------------------------------- #149
+
+// TestReapIdleNotifiesOnReapNotError_Issue149 闲置回收是设计内行为（下次调用
+// 透明重建），必须走专属 OnReap 通道，不得借道 OnError——按失败率消费 OnError
+// 的宿主（告警/指标）此前被周期性回收灌满错误面，真失败信号被淹没
+// ——oagentkit/mcpkit#149。
+func TestReapIdleNotifiesOnReapNotError_Issue149(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		errs     []string
+		reaps    []string
+		reapIdle time.Duration
+	)
+	p := NewPool()
+	old := &fakeClient{}
+	seedFake(p, "old", old)
+	setConn(p, "old", func(st *connState) { st.lastUsed = time.Now().Add(-10 * time.Minute) })
+	p.OnError = func(server string, err error) {
+		mu.Lock()
+		errs = append(errs, server+": "+err.Error())
+		mu.Unlock()
+	}
+	p.OnReap = func(server string, idle time.Duration) {
+		mu.Lock()
+		reaps = append(reaps, server)
+		reapIdle = idle
+		mu.Unlock()
+	}
+
+	if n := p.ReapIdle(time.Minute); n != 1 {
+		t.Fatalf("应回收 1 条: %d", n)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(errs) != 0 {
+		t.Fatalf("回收不得经 OnError 发射, got %v", errs)
+	}
+	if len(reaps) != 1 || reaps[0] != "old" {
+		t.Fatalf("回收应经 OnReap 点名 server, got %v", reaps)
+	}
+	if reapIdle != time.Minute {
+		t.Fatalf("OnReap 应携带闲置阈值, got %s", reapIdle)
 	}
 }
