@@ -30,6 +30,10 @@ import (
 //	                   工具（装包≠开洞、工具面未声明）。不要重试——重试一万次
 //	                   它也不会出现。改配置或改契约。
 //	KindInvalidArgs —— 参数错。**调用问题**：工具在、但传参不合法。改调用方。
+//	KindUnknown     —— 判不出（兜底，含 isError:true 业务失败的**无明确信号**
+//	                   payload，oagentkit/mcpkit#144）。保守不重试：确定性业务
+//	                   失败（"pod not found"、权限不足、业务校验拒绝）混在里面，
+//	                   盲重试只会把失败放大——读工具反馈人工研判后再决定处置。
 type ErrorKind int
 
 const (
@@ -103,6 +107,10 @@ func (k *ErrorKind) UnmarshalJSON(data []byte) error {
 //
 // 关键：**工具不存在与参数错重试没有意义**——重试不会让 server 长出那个工具，
 // 也不会让非法参数变合法。盲目重试会把「配置问题」伪装成「偶发抖动」。
+// 同理，KindUnknown（判不出，含 isError:true 无明确信号的业务失败）也**不重试**
+//（oagentkit/mcpkit#144）：这类 payload 里混着大量确定性业务失败（资源不存在、
+// 权限不足、业务校验拒绝），保守不重试——错在安全侧，宁可漏掉可重试的真抖动
+//（调用方还有传输层自愈兜底），不把确定性失败刷成重试风暴。
 func (k ErrorKind) Retryable() bool {
 	switch k {
 	case KindUnreachable:
@@ -117,7 +125,9 @@ func (k ErrorKind) Retryable() bool {
 // ClassifyError 把任意错误归到稳定分类。
 //
 // 判定顺序（**先具体后笼统**，避免被笼统分支抢走）：
-//  1. 工具业务失败（isError:true）→ 按 payload 信号细分，否则 KindProtocol
+//  1. 工具业务失败（isError:true）→ 按 payload 信号细分，判不出归 KindUnknown
+//     （oagentkit/mcpkit#144：此前兜底归 KindProtocol 且 Retryable——把确定性
+//     业务失败推给「修 server」处置面并触发盲重试，与协议错的真实语义错位）
 //  2. JSON-RPC 哨兵错误（mcp.ErrInvalidParams / ErrMethodNotFound …）——
 //     这是 mcp-go 把 JSON-RPC 错误码转成 Go error 的**官方路径**
 //     （JSONRPCErrorDetails.AsError），按哨兵判比按错误码判更可靠：
@@ -178,8 +188,12 @@ func ClassifyRPCCode(code int) ErrorKind {
 //
 // 这里是**唯一**必须碰文本的地方：isError:true 的响应没有错误码，
 // 只有服务端自己写的 message。此时按「明确的工具不存在/参数错信号」判，
-// 判不出就归 KindProtocol（保守——不把未知误判成「工具不存在」，
-// 因为那会误导调用方去改契约而不是查 server）。
+// 判不出归 KindUnknown（oagentkit/mcpkit#144）：payload 兜底面是**业务失败**
+// 的海洋（"pod not found"、权限不足、业务校验拒绝都是确定性失败），归
+// KindProtocol 会把处置面推向「修 server / 升协议」且 Retryable==true 触发
+// 盲重试——两个下游决策同时被带偏；KindUnknown 保守不重试，处置交给「读
+// 工具反馈人工研判」。宁欠勿滥：误判成 tool_missing 误导调用方改契约、
+// 误判成 protocol 推给 server 运维，都比「未知待人工」代价高。
 func classifyToolResultPayload(payload string) ErrorKind {
 	low := strings.ToLower(payload)
 	switch {
@@ -194,7 +208,7 @@ func classifyToolResultPayload(payload string) ErrorKind {
 		strings.Contains(low, "missing required"):
 		return KindInvalidArgs
 	default:
-		return KindProtocol
+		return KindUnknown
 	}
 }
 

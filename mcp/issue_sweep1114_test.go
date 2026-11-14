@@ -105,3 +105,37 @@ func TestProbeToolsRealFailureStillFailed_Issue143(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------- #144
+
+// TestToolResultPayloadDefaultIsUnknown_Issue144 isError:true 业务失败的
+// payload 无明确信号时必须落 KindUnknown（保守不重试），不得落 KindProtocol
+//（Retryable==true 会把确定性业务失败当抖动盲重试、处置面错推给「修 server」）
+// ——oagentkit/mcpkit#144。
+func TestToolResultPayloadDefaultIsUnknown_Issue144(t *testing.T) {
+	// 确定性业务失败（无工具不存在/参数错信号）
+	for _, payload := range []string{
+		`pod not found in cluster`,
+		`permission denied for resource`,
+		`quota exceeded for project`,
+	} {
+		if k := classifyToolResultPayload(payload); k != KindUnknown {
+			t.Fatalf("payload %q 应落 unknown, got %s", payload, k)
+		}
+		if classifyToolResultPayload(payload).Retryable() {
+			t.Fatalf("payload %q 判 unknown 后不得可重试", payload)
+		}
+	}
+	// 端到端：ToolResultError 经 ClassifyError 同口径（isError:true 唯一入口）
+	tre := &ToolResultError{payload: []byte(`{"content":[{"type":"text","text":"pod not found"}]}`)}
+	if k := ClassifyError(tre); k != KindUnknown {
+		t.Fatalf("ToolResultError 无信号 payload 应落 unknown, got %s", k)
+	}
+	// 明确信号面不回退：工具不存在 / 参数错照常细分
+	if k := classifyToolResultPayload("tool not found: fs_read"); k != KindToolMissing {
+		t.Fatalf("tool not found 应落 tool_missing, got %s", k)
+	}
+	if k := classifyToolResultPayload("invalid params: path"); k != KindInvalidArgs {
+		t.Fatalf("invalid params 应落 invalid_args, got %s", k)
+	}
+}
