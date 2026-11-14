@@ -50,8 +50,17 @@ type callMetaKey struct{}
 
 // WithCallMeta 在 ctx 上注入任务级调用元数据（Runner/任务层调用一次，随 ctx
 // 流入该任务全部 MCP 工具调用）。
+//
+// ⚠️ 注入即拷贝（快照语义，oagentkit/mcpkit#142，对齐 llm#68 同款）：metaClient
+// 从 ctx 读的是**注入时刻的快照**——注入后复用/改写原 map（补 session/trace
+// 字段、清理）不影响已在途的工具调用 _meta；并发工具调用下也不构成 data race
+// （metaClient.CallTool 的 maps.Copy 读的是独立副本）。后续要变更元数据请**二次
+// 注入整包**（新 ctx 再传给后续调用）；只改原 map 不重注，后续调用静默沿用旧值。
 func WithCallMeta(ctx context.Context, meta map[string]any) context.Context {
-	return context.WithValue(ctx, callMetaKey{}, meta)
+	if len(meta) == 0 {
+		return ctx // 零开销直通（metaClient 对空不注入 _meta，快照无意义）
+	}
+	return context.WithValue(ctx, callMetaKey{}, maps.Clone(meta))
 }
 
 // CallMeta 从 ctx 取调用元数据；无注入返回 nil（metaClient 对空不注入 _meta）。
