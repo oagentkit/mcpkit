@@ -745,6 +745,11 @@ func (p *Pool) registerConn(name string, st *connState, cli client.MCPClient, tr
 		_ = cli.Close()
 		return existing, nil
 	}
+	// 连接换了目录必须重列（oagentkit/mcpkit#146 防御层）：detachLocked 已随连接
+	// 清目录，但 catalogFor 的并发写入可能在 detach 后、本注册前落进来（列举
+	// 所用连接已死）——残留目录会以旧工具面/schema 服务新连接，热换装变化
+	// 静默不可见。注册即清零，目录生命周期严格随连接代际。
+	st.catalog = nil
 	st.cli = cli
 	st.tr = tr
 	st.lastUsed = time.Now()

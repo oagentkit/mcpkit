@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -255,5 +256,133 @@ func TestDisclosureActivatorReceivesCallerCtx_Issue145(t *testing.T) {
 	}
 	if gotCtx == nil {
 		t.Fatal("激活器应拿到调用方 ctx")
+	}
+}
+
+// ---------------------------------------------------------------- #146
+
+// genListClient 目录代际假体：ListTools 可阻塞（entered/release 拉住列举窗口），
+// 用于确定性复现「列举期间连接换代」。
+type genListClient struct {
+	client.MCPClient // embedding：未编排的方法 panic 即「测试不应触达」
+	tools            []string
+	entered          chan struct{} // 非 nil：进入 ListTools 时关闭
+	release          chan struct{} // 非 nil：等它放行再返回
+}
+
+func (c *genListClient) Initialize(context.Context, mcp.InitializeRequest) (*mcp.InitializeResult, error) {
+	return &mcp.InitializeResult{}, nil
+}
+
+func (c *genListClient) Close() error { return nil }
+
+func (c *genListClient) ListTools(context.Context, mcp.ListToolsRequest) (*mcp.ListToolsResult, error) {
+	if c.entered != nil {
+		close(c.entered)
+		<-c.release
+	}
+	res := &mcp.ListToolsResult{}
+	for _, n := range c.tools {
+		res.Tools = append(res.Tools, mcp.Tool{Name: n})
+	}
+	return res, nil
+}
+
+func catalogNames(entries []toolEntry) []string {
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.tool.Name)
+	}
+	return names
+}
+
+// TestCatalogForWritesOnlyCurrentGeneration_Issue146 catalogFor 落缓存必须绑定
+// 连接代际：列举期间连接被 evict/redial 换代时，旧连接的目录不得写到新连接上
+// （列表不持 lease、connState 跨重建复用、registerConn 不清目录——窗口结构性
+// 存在；写进去的旧目录让热换装的工具面变化静默不可见，probeFingerprint 比对
+// 基准也被污染）——oagentkit/mcpkit#146。
+func TestCatalogForWritesOnlyCurrentGeneration_Issue146(t *testing.T) {
+	cfg := ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"}
+	p := NewPool(cfg)
+	c1 := &genListClient{tools: []string{"stale-tool"}, entered: make(chan struct{}), release: make(chan struct{})}
+	p.dialFn = func(context.Context, ServerConfig) (client.MCPClient, transport.Interface, error) {
+		return c1, nil, nil
+	}
+
+	// G1：建连（注册 c1）→ catalogFor 列举（阻塞在窗口内）
+	g1done := make(chan struct{})
+	go func() {
+		defer close(g1done)
+		cli, err := p.client(t.Context(), cfg)
+		if err != nil {
+			t.Errorf("G1 建连失败: %v", err)
+			return
+		}
+		// G1 返回的列举结果属于已死连接——照常返回给调用方（工具绑它自己
+		// 持有的连接，传输层死亡由自愈接管），但**不得**落缓存。
+		entries, err := p.catalogFor(t.Context(), cfg, cli)
+		if err != nil {
+			t.Errorf("G1 列举失败: %v", err)
+			return
+		}
+		if got := catalogNames(entries); len(got) != 1 || got[0] != "stale-tool" {
+			t.Errorf("G1 应拿到自己列举的结果, got %v", got)
+		}
+	}()
+	<-c1.entered // G1 已进入列举（此时 st.cli == c1）
+
+	// 列举窗口内换代：evict c1（detach 清 catalog/cli）→ 注册 c2
+	p.evict("srv", c1)
+	st := p.conn("srv")
+	if st == nil {
+		t.Fatal("connState 应已存在")
+	}
+	c2 := &genListClient{tools: []string{"fresh-tool"}}
+	if _, err := p.registerConn("srv", st, c2, nil, ""); err != nil {
+		t.Fatalf("注册 c2 失败: %v", err)
+	}
+
+	close(c1.release) // 放 G1 收尾：其写缓存必须因代际比对被跳过
+	<-g1done
+
+	st.mu.Lock()
+	leftover := st.catalog
+	st.mu.Unlock()
+	if leftover != nil {
+		t.Fatalf("换代后的旧目录不得落缓存, got %v", catalogNames(leftover))
+	}
+
+	// c2 的下一次 catalogFor 正常重列并落缓存
+	entries, err := p.catalogFor(t.Context(), cfg, c2)
+	if err != nil {
+		t.Fatalf("c2 列举失败: %v", err)
+	}
+	if got := catalogNames(entries); len(got) != 1 || got[0] != "fresh-tool" {
+		t.Fatalf("新连接应重列出新工具面, got %v", got)
+	}
+	st.mu.Lock()
+	cached := st.catalog
+	st.mu.Unlock()
+	if len(cached) != 1 || cached[0].tool.Name != "fresh-tool" {
+		t.Fatalf("新连接的目录应落缓存, got %v", catalogNames(cached))
+	}
+}
+
+// TestRegisterConnClearsLeftoverCatalog_Issue146 防御层：连接注册必须清掉
+// 残留目录（detach 后、注册前 catalogFor 并发写入的窗口产物）——连接换了
+// 目录必须重列——oagentkit/mcpkit#146。
+func TestRegisterConnClearsLeftoverCatalog_Issue146(t *testing.T) {
+	p := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
+	st := p.connLocked("srv")
+	st.mu.Lock()
+	st.catalog = []toolEntry{{tool: mcp.Tool{Name: "ghost"}}}
+	st.mu.Unlock()
+	if _, err := p.registerConn("srv", st, &genListClient{}, nil, ""); err != nil {
+		t.Fatalf("注册失败: %v", err)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.catalog != nil {
+		t.Fatalf("registerConn 必须清残留目录, got %v", catalogNames(st.catalog))
 	}
 }
