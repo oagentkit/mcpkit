@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -17,7 +18,7 @@ import (
 // ---------------------------------------------------------------- #143
 
 // budgetProbeClient 探针预算假体：目录三工具，slow 调用阻塞到 ctx 完结
-//（确定性吃光整轮预算——不赌 sleep 时长），其余调用按 fastErr 回错。
+// （确定性吃光整轮预算——不赌 sleep 时长），其余调用按 fastErr 回错。
 // slowBlock=false 时 slow 也走 fastErr（对照组：预算充足下的真失败）。
 type budgetProbeClient struct {
 	client.MCPClient // embedding：未编排的方法 panic 即「测试不应触达」
@@ -110,7 +111,7 @@ func TestProbeToolsRealFailureStillFailed_Issue143(t *testing.T) {
 
 // TestToolResultPayloadDefaultIsUnknown_Issue144 isError:true 业务失败的
 // payload 无明确信号时必须落 KindUnknown（保守不重试），不得落 KindProtocol
-//（Retryable==true 会把确定性业务失败当抖动盲重试、处置面错推给「修 server」）
+// （Retryable==true 会把确定性业务失败当抖动盲重试、处置面错推给「修 server」）
 // ——oagentkit/mcpkit#144。
 func TestToolResultPayloadDefaultIsUnknown_Issue144(t *testing.T) {
 	// 确定性业务失败（无工具不存在/参数错信号）
@@ -137,5 +138,122 @@ func TestToolResultPayloadDefaultIsUnknown_Issue144(t *testing.T) {
 	}
 	if k := classifyToolResultPayload("invalid params: path"); k != KindInvalidArgs {
 		t.Fatalf("invalid params 应落 invalid_args, got %s", k)
+	}
+}
+
+// ---------------------------------------------------------------- #145
+
+// TestDisclosureWaiterCtxTimeout_Issue145 激活器挂死时，等待者必须随自身 ctx
+// 超时退出（可重态 + ctx.Err()），不得不可取消地阻塞在 call.done 上——激活是
+// 宿主外部动作（reload/热刷新），可慢可挂，门禁必须留逃生门。等待者先退是
+// 安全的：失败代由 leader 收尾，激活成功后已入集。假体走 testing/synctest
+// 假时钟（无真实 sleep）——oagentkit/mcpkit#145。
+func TestDisclosureWaiterCtxTimeout_Issue145(t *testing.T) {
+	var (
+		waiterVerdict  DisclosureVerdict
+		waiterReturned bool
+	)
+	// 假体与信号 channel 全部在 bubble 内构造：synctest 只对 bubble 内创建的
+	// channel/时钟判「durable 阻塞」——挂死在 bubble 外 channel 上的 goroutine
+	// 会让假时钟永不推进（本轮实现时踩过：外部 release 卡住 leader，bubble 失聪）。
+	synctest.Test(t, func(*testing.T) {
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		g := NewDisclosureGate(newGateCatalog(), nil,
+			WithDisclosureActivator(func(_ context.Context, _ string) error {
+				close(entered)
+				<-release // 挂死模拟：直到测试放行
+				return nil
+			}))
+		leaderRes := make(chan DisclosureVerdict, 1)
+		go func() { leaderRes <- g.Check(context.Background(), "write") }()
+		<-entered // 激活器已挂死
+
+		waiterCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		waiterRes := make(chan DisclosureVerdict, 1)
+		go func() { waiterRes <- g.Check(waiterCtx, "write") }()
+		select {
+		case v := <-waiterRes:
+			waiterVerdict, waiterReturned = v, true
+		case <-time.After(2 * time.Second): // bubble 假时钟：到点即「等待者未退」
+			waiterReturned = false
+		}
+		close(release) // 放 leader 收尾：验证先退的等待者不破坏门禁状态
+		<-leaderRes
+	})
+	if !waiterReturned {
+		t.Fatal("激活器挂死时等待者未随 ctx 超时退出（oagentkit/mcpkit#145）")
+	}
+	if !waiterVerdict.Retryable() || waiterVerdict.Activated {
+		t.Fatalf("等待者超时应保可重态: %+v", waiterVerdict)
+	}
+	if !errors.Is(waiterVerdict.Err, context.DeadlineExceeded) {
+		t.Fatalf("等待者应透传 ctx.Err(), got %v", waiterVerdict.Err)
+	}
+}
+
+// TestDisclosureLeaderCtxDeadSkipsActivation_Issue145 leader 的 ctx 已死时不得
+// 启动激活器（不给已取消的调用放大等待面）；inflight 必须照常收尾（等待者/
+// 后续 Check 起新代），门禁可恢复——oagentkit/mcpkit#145。
+func TestDisclosureLeaderCtxDeadSkipsActivation_Issue145(t *testing.T) {
+	calls := 0
+	g := NewDisclosureGate(newGateCatalog(), nil,
+		WithDisclosureActivator(func(_ context.Context, _ string) error {
+			calls++
+			return nil
+		}))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	v := g.Check(ctx, "write")
+	if !v.Retryable() || v.Activated {
+		t.Fatalf("ctx 已死应保可重态且不激活: %+v", v)
+	}
+	if !errors.Is(v.Err, context.Canceled) {
+		t.Fatalf("应透传 context.Canceled, got %v", v.Err)
+	}
+	if calls != 0 {
+		t.Fatalf("ctx 已死不得启动激活器, calls=%d", calls)
+	}
+	if got := g.Loaded(); len(got) != 0 {
+		t.Fatalf("取消代不得入已披露集: %v", got)
+	}
+	// inflight 已收尾：好 ctx 的下一次 Check 起新代并成功（泄漏态下这里会等死）
+	if v2 := g.Check(t.Context(), "write"); !v2.Retryable() || !v2.Activated {
+		t.Fatalf("后续 Check 应起新代激活成功: %+v", v2)
+	}
+	if calls != 1 {
+		t.Fatalf("新代应执行激活器一次, calls=%d", calls)
+	}
+}
+
+// TestDisclosureActivatorReceivesCallerCtx_Issue145 激活器拿到的是 Check 调用方
+// ctx——调用方取消时挂在外部资源上的激活可感知并中止（Err 链透传 Canceled，
+// 目录事实不变仍可重试）——oagentkit/mcpkit#145。
+func TestDisclosureActivatorReceivesCallerCtx_Issue145(t *testing.T) {
+	entered := make(chan struct{})
+	var gotCtx context.Context
+	g := NewDisclosureGate(newGateCatalog(), nil,
+		WithDisclosureActivator(func(ctx context.Context, _ string) error {
+			gotCtx = ctx
+			close(entered)
+			<-ctx.Done() // 激活器在长操作上响应调用方取消
+			return ctx.Err()
+		}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	leader := make(chan DisclosureVerdict, 1)
+	go func() { leader <- g.Check(ctx, "write") }()
+	<-entered
+	cancel()
+	lv := <-leader
+	if !lv.Retryable() || lv.Activated {
+		t.Fatalf("激活被取消应保可重态: %+v", lv)
+	}
+	if !errors.Is(lv.Err, context.Canceled) {
+		t.Fatalf("激活器取消错误应穿透 Err 链, got %v", lv.Err)
+	}
+	if gotCtx == nil {
+		t.Fatal("激活器应拿到调用方 ctx")
 	}
 }
