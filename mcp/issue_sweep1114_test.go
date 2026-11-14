@@ -457,3 +457,52 @@ func TestReapIdleNotifiesOnReapNotError_Issue149(t *testing.T) {
 		t.Fatalf("OnReap 应携带闲置阈值, got %s", reapIdle)
 	}
 }
+
+// ---------------------------------------------------------------- #150
+
+// captureInitClient initialize 握手捕获假体：记下自报的 ClientInfo。
+type captureInitClient struct {
+	client.MCPClient
+	got mcp.Implementation
+}
+
+func (c *captureInitClient) Initialize(_ context.Context, req mcp.InitializeRequest) (*mcp.InitializeResult, error) {
+	c.got = req.Params.ClientInfo
+	return &mcp.InitializeResult{}, nil
+}
+
+func (c *captureInitClient) Close() error { return nil }
+
+// TestInitializeClientIdentity_Issue150 initialize 客户端身份必须可归因：缺省
+// mcpkit@包版本（发版 ldflags 注入锚点），宿主经 ServerConfig.ClientInfo 覆写
+// 时以宿主为准——恒定伪名（"agentkit"/"1.0"）让 server 侧归因/审计失去锚点、
+// mcpkit 升版在 server 侧不可见——oagentkit/mcpkit#150。
+func TestInitializeClientIdentity_Issue150(t *testing.T) {
+	// 缺省身份
+	p := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
+	var def captureInitClient
+	p.dialFn = func(context.Context, ServerConfig) (client.MCPClient, transport.Interface, error) {
+		return &def, nil, nil
+	}
+	if _, err := p.client(t.Context(), ServerConfig{Name: "srv", URL: "x"}); err != nil {
+		t.Fatalf("建连失败: %v", err)
+	}
+	if def.got.Name != "mcpkit" || def.got.Version != Version {
+		t.Fatalf("缺省身份应 mcpkit@%s, got %+v", Version, def.got)
+	}
+
+	// 宿主覆写优先
+	host := &mcp.Implementation{Name: "platform-x", Version: "9.9.0"}
+	cfgHost := ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp", ClientInfo: host}
+	p2 := NewPool(cfgHost)
+	var cap2 captureInitClient
+	p2.dialFn = func(context.Context, ServerConfig) (client.MCPClient, transport.Interface, error) {
+		return &cap2, nil, nil
+	}
+	if _, err := p2.client(t.Context(), cfgHost); err != nil {
+		t.Fatalf("建连失败: %v", err)
+	}
+	if cap2.got.Name != "platform-x" || cap2.got.Version != "9.9.0" {
+		t.Fatalf("宿主 ClientInfo 应原样自报, got %+v", cap2.got)
+	}
+}

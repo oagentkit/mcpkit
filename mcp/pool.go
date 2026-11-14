@@ -81,6 +81,10 @@ type ServerConfig struct {
 	// 调用方经 client.GetOAuthHandler 取 handler 驱动授权码+PKCE 流程；
 	// TokenStore 由调用方提供（进程内缓存失效后重 dial 仍能取回已授权 token）。
 	OAuth *OAuthClientConfig
+	// ClientInfo 自定义 initialize 客户端身份（oagentkit/mcpkit#150；nil = 缺省
+	// mcpkit@包版本，见 mcp.Version）。server 侧按 initialize 的 ClientInfo 归因
+	// 连接方——宿主自带身份（平台名/版本）时以此为准，本池不覆盖。
+	ClientInfo *mcp.Implementation
 }
 
 // OAuthClientConfig URL 传输的 OAuth2 装配输入（映射 mcp-go client.OAuthConfig；
@@ -230,6 +234,10 @@ type connState struct {
 // NewPool 创建连接池（建连延后到 Tools 调用时——允许启动期 MCP server 未就绪）。
 // Name 为空的配置忽略；重名保留先到者（后者忽略）——配置错误尽早收敛为确定性
 // 行为而非静默覆盖。
+//
+// 缺省客户端身份（oagentkit/mcpkit#150）：initialize 自报 mcpkit@包版本
+//（mcp.Version，发版经 ldflags 注入；server 侧按 ClientInfo 归因连接方）。
+// 宿主自带身份时按 server 配置 ServerConfig.ClientInfo 覆写。
 func NewPool(cfgs ...ServerConfig) *Pool {
 	baseCtx, cancel := context.WithCancel(context.Background())
 	p := &Pool{cfgs: map[string]ServerConfig{}, conns: map[string]*connState{},
@@ -691,7 +699,7 @@ func (p *Pool) dialAndRegister(ctx context.Context, cfg ServerConfig) (client.MC
 			return nil, fmt.Errorf("mcp: %s client 启动失败: %w", cfg.Name, serr)
 		}
 	}
-	cli, protoVersion, err := initializeClient(cctx, cli, p.ElicitationHandler)
+	cli, protoVersion, err := initializeClient(cctx, cli, cfg.ClientInfo, p.ElicitationHandler)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: %s %w", cfg.Name, err)
 	}
@@ -728,11 +736,18 @@ func (st *connState) cachedClient() client.MCPClient {
 // initializeClient MCP 协议要求先 Initialize 才可调用；返回代际标记
 // （Initialize 后才可知，现代协议 Ping 是 no-op，探活路径须分流）。
 // 失败时关闭连接——调用方拿到 error 即连接已回收。
+// 客户端身份：cfg.ClientInfo 优先（宿主自带身份，#150），缺省 mcpkit@Version
+//（发版 ldflags 注入；server 侧按 ClientInfo 归因连接方，恒定/伪名会让升版
+// 在 server 侧不可见）。
 // 返回协商协议版本（raw 目录通道的现代协议判据；断言失败（测试桩）=空串=旧协议路径）。
-func initializeClient(ctx context.Context, cli client.MCPClient, elicitation client.ElicitationHandler) (client.MCPClient, string, error) {
+func initializeClient(ctx context.Context, cli client.MCPClient, clientInfo *mcp.Implementation, elicitation client.ElicitationHandler) (client.MCPClient, string, error) {
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "agentkit", Version: "1.0"}
+	if clientInfo != nil {
+		initReq.Params.ClientInfo = *clientInfo
+	} else {
+		initReq.Params.ClientInfo = mcp.Implementation{Name: "mcpkit", Version: Version}
+	}
 	if elicitation != nil {
 		// 能力声明与 handler 同装（不声明则支持 elicitation 的 server 不会发起）
 		initReq.Params.Capabilities.Elicitation = &mcp.ElicitationCapability{}
