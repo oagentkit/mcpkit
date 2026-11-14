@@ -386,3 +386,28 @@ func TestRegisterConnClearsLeftoverCatalog_Issue146(t *testing.T) {
 		t.Fatalf("registerConn 必须清残留目录, got %v", catalogNames(st.catalog))
 	}
 }
+
+// ---------------------------------------------------------------- #147
+
+// TestAggregateEmptyInputIsUnknown_Issue147 零个 server 参与聚合必须返回
+// unknown（不是 healthy）——「没查」与「查了都好」在告警面必须可区分，空输入
+// 判 healthy 会让巡检脚本/上游过滤故障静默变绿——oagentkit/mcpkit#147。
+func TestAggregateEmptyInputIsUnknown_Issue147(t *testing.T) {
+	for name, in := range map[string][]SelfcheckResult{
+		"nil":  nil,
+		"empty": {},
+	} {
+		h := Aggregate(in)
+		if h.State != HealthUnknown {
+			t.Fatalf("%s: 空输入应返回 unknown, got %s", name, h.State)
+		}
+		if h.Total != 0 || h.OK() || h.Healthy() || h.Down() || h.Degraded() {
+			t.Fatalf("%s: unknown 态下 Total=0 且四态谓词皆假, got %+v", name, h)
+		}
+	}
+	// 全绿（非空）仍判 healthy：修法不得误伤正常判定
+	h := Aggregate([]SelfcheckResult{{Server: "srv", Reachable: true}})
+	if h.State != HealthHealthy {
+		t.Fatalf("单 server 全绿应仍判 healthy, got %s", h.State)
+	}
+}
