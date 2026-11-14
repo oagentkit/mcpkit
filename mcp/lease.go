@@ -168,6 +168,10 @@ func probeFingerprintOfEntries(entries []toolEntry) string {
 // 建连/取工具/探活成功。被回收的 server 下次调用透明重建（evict+lazy 建连）。
 // 在途工具调用（leaseUse 登记）中的连接不回收——原先契约要求 maxIdle 显著大于
 // 最大工具超时，现在由在途计数直接挡下。
+//
+// 回收事件经 OnReap 发射（oagentkit/mcpkit#149）：回收是设计内行为（透明重建），
+// 不是失败——此前借道 OnError，按失败率消费回调的宿主错误面被周期性回收灌满
+// （StartIdleReaper 短 interval 时尤甚），真失败信号被淹没。
 func (p *Pool) ReapIdle(maxIdle time.Duration) int {
 	if maxIdle <= 0 {
 		return 0
@@ -201,9 +205,10 @@ func (p *Pool) ReapIdle(maxIdle time.Duration) int {
 	}
 	for _, v := range closing {
 		_ = v.cli.Close()
-		// 经 notifyError 串行化：ReapIdle 与 Tools（跨 server 并行）并发直调
-		// 用户 OnError 是数据竞争——errMu 契约见 pool.go（第六轮审计 C 级）
-		p.notifyError(v.name, fmt.Errorf("mcp: 闲置超过 %s，连接已回收（下次调用重建）", maxIdle))
+		// 经 notifyReap 串行化：ReapIdle 与 Tools（跨 server 并行）并发直调
+		// 用户回调是数据竞争——errMu 契约见 pool.go（第六轮审计 C 级）。
+		// 走 OnReap 不走 OnError（oagentkit/mcpkit#149）：回收是设计内行为。
+		p.notifyReap(v.name, maxIdle)
 	}
 	return len(closing)
 }

@@ -19,10 +19,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
+
+	"github.com/oagentkit/runtime/procx"
 
 	"github.com/oagentkit/mcpkit/mcp"
 )
@@ -81,12 +85,13 @@ flags:
 		url     = fs.String("url", "", "server URL（HTTP / streamable http 传输）")
 		command = fs.String("command", "", "server 可执行文件（stdio 传输，逗号分隔参数）")
 		server  = fs.String("server", "default", "server 逻辑名")
-		timeout = fs.Duration("timeout", 10*time.Second, "单次探测超时")
-		ttl     = fs.Duration("ttl", 30*time.Second, "目录缓存 TTL（0 = 不缓存）")
+		timeout = fs.Duration("timeout", 10*time.Second, "整轮自检超时预算")
 		asJSON  = fs.Bool("json", false, "以 JSON 输出")
 		probe   = fs.Bool("probe-tools", false, "逐工具实调探测（有副作用）")
 		doInit  = fs.Bool("init", true, "自检前先发 initialize 握手")
 	)
+	var extraEnv stringList
+	fs.Var(&extraEnv, "env", "子进程额外环境变量（stdio 传输，可重复给）：纯名=从当前进程按名透传，KEY=VALUE=字面注入")
 	var expect stringList
 	fs.Var(&expect, "expect", "声明期望存在的工具名（可重复给）")
 	if err := fs.Parse(args); err != nil {
@@ -106,7 +111,7 @@ flags:
 	)
 	if *command != "" {
 		parts := strings.Split(*command, ",")
-		cli, err = client.NewStdioMCPClient(parts[0], env, parts[1:]...)
+		cli, err = newStdioClient(parts[0], parts[1:], extraEnv)
 	} else {
 		cli, err = client.NewStreamableHttpClient(*url)
 	}
@@ -116,10 +121,12 @@ flags:
 	}
 	defer func() { _ = cli.Close() }()
 
+	// 不设 TTL（=0 即不缓存）：本命令单次运行即退出，进程内 TTL 缓存不可能
+	// 命中（oagentkit/mcpkit#148——此前 --ttl 给出了在该二进制里不可能生效
+	// 的语义，恒冷启实拉）；TTL 语义留给库用法/常驻巡检（SelfcheckOptions.TTL）。
 	opts := mcp.SelfcheckOptions{
 		Server:     *server,
 		Timeout:    *timeout,
-		TTL:        *ttl,
 		ProbeTools: *probe,
 		Initialize: *doInit,
 	}
@@ -179,8 +186,23 @@ func printText(res mcp.SelfcheckResult, h mcp.Health) {
 	}
 }
 
-// env 子进程环境（stdio 传输）。留空 = 不继承任何环境变量（防密钥泄漏）。
-var env = []string{}
+// newStdioClient stdio 传输建连（CLI 侧）。环境纪律与池侧 dialStdio 同源单表：
+// 经 CommandFunc 接管 exec.Cmd，cmd.Env = procx.ChildEnv(env)——白名单 + --env
+// 显式放行，**绝不继承全量 os.Environ()**（oagentkit/mcpkit#141：此前便捷
+// 构造器把空 env 补成 os.Environ()，注释声称的「不继承任何环境变量（防密钥
+// 泄漏）」与实现完全相反——宿主 API Key/云凭证全量交给待执行的外部 server）。
+func newStdioClient(command string, args []string, env []string) (*client.Client, error) {
+	return client.NewStdioMCPClientWithOptions(command, env, args,
+		transport.WithCommandFunc(stdioCommandFunc))
+}
+
+// stdioCommandFunc 子进程构造单点（mcp-go StdioOption 回调）：环境白名单纪律
+// 的实际落点（runtime/procx/env.go 为全仓库子进程环境纪律单一事实源）。
+func stdioCommandFunc(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), command, args...)
+	cmd.Env = procx.ChildEnv(env)
+	return cmd, nil
+}
 
 // jsonToolCheck 工具检查项的 JSON 形态。
 type jsonToolCheck struct {

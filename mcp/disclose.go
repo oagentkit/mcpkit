@@ -10,6 +10,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -78,27 +79,31 @@ func (v DisclosureVerdict) Retryable() bool { return v.State == DisclosureRetrya
 // 用法（宿主装配层）：
 //
 //	gate := mcp.NewDisclosureGate(catalog, []string{"srv.search"}, // 已装配（已披露）的工具
-//	    mcp.WithDisclosureActivator(func(name string) error { return reload(name) }))
-//	v := gate.Check("srv.write") // 目录内未披露 → 拒 + 顺手激活 + 可重试文案
+//	    mcp.WithDisclosureActivator(func(ctx context.Context, name string) error { return reload(ctx, name) }))
+//	v := gate.Check(ctx, "srv.write") // 目录内未披露 → 拒 + 顺手激活 + 可重试文案
 //
 // 名字空间约定：Check 的名字与 Catalog/loaded 的名字须同空间（原始名或带
 // server 的暴露名均可——门禁只做集合比对，不猜命名）。并发安全：Check 可被
 // 多 goroutine 调用；激活成功即入已披露集（之后判定为放行）。激活器在门禁
 // 锁外执行（oagentkit/mcpkit#75）：慢激活不阻塞任何 Check/Loaded/Catalog，
 // 锁只保护 loaded/inflight 两个可变结构（catalog/guidance 构造后不可变）。
+// 取消语义（oagentkit/mcpkit#145）：Check 的 ctx 取消/超时可退出——等待者
+// 不再干等 leader 的激活收尾，leader 自身也不把已取消的 ctx 带进激活器
+// （激活是宿主外部动作，可挂可慢，调用方必须留有逃生门）。
 type DisclosureGate struct {
 	mu      sync.Mutex
 	catalog Catalog
 	loaded  map[string]struct{}
 	// inflight 单飞去重（oagentkit/mcpkit#75）：同名工具的并发激活收敛到
 	// 一次执行——首个注册者在锁外跑激活器，后来者等其 done（等的是**别的
-	// goroutine** 在锁外干活，不是等锁，无死锁面）。激活失败的代不留痕迹，
-	// 下一次 Check 起新一代重试。
+	// goroutine** 在锁外干活，不是等锁，无死锁面；等待者可随自身 ctx 退出，
+	// oagentkit/mcpkit#145）。激活失败的代不留痕迹，下一次 Check 起新一代重试。
 	inflight map[string]*activationCall
 	// activate 宿主提供的激活动作（把工具从「未披露」转「已披露」——如把
-	// 工具装进模型的工具表并热刷新）；nil = 门禁不代激活（宿主自管，判定
-	// 仍给出可重试语义）。
-	activate func(tool string) error
+	// 工具装进模型的工具表并热刷新）；ctx 是触发激活的 Check 调用方 ctx
+	//（oagentkit/mcpkit#145：激活是宿主外部动作，实现应在 reload/热刷新等
+	// 长操作上响应取消）；nil = 门禁不代激活（宿主自管，判定仍给出可重试语义）。
+	activate func(ctx context.Context, tool string) error
 	// guidance 文案模板（零值字段回落内置缺省）。
 	guidance DisclosureGuidance
 }
@@ -116,15 +121,18 @@ type DisclosureGateOption func(*DisclosureGate)
 // WithDisclosureActivator 配置激活动作：判定为「目录内未披露」时顺手调用
 // （成功即入已披露集，模型重试时直接放行——「拒但顺手激活，重试必成」的
 // 落地）。未配置时门禁只判定不激活（可重试语义仍在，激活由宿主另行完成）。
+// fn 的 ctx 为触发激活的 Check 调用方 ctx（oagentkit/mcpkit#145）：调用方
+// 取消/超时后激活不应继续——reload/热刷新等长操作应响应 ctx。
 //
 // 锁契约（oagentkit/mcpkit#75）：激活器在门禁锁**外**执行——慢激活（装配
 // 工具、热刷新等）不阻塞其他工具的 Check/Loaded/Catalog；激活器允许回查
 // 本门禁（Loaded/Catalog/对其他工具的 Check 均安全，不会自死锁）。同名工具
 // 的并发激活由单飞去重：同一次激活代内激活器只执行一次。唯一禁止：对
-// **正在激活的同一工具**递归 Check——该调用会等待本次激活完成（即等待自身）。
-// 激活器 panic 被门禁转为激活通道故障（oagentkit/mcpkit#89）：inflight 清理照走、
-// 等待者醒来，Check 返回可重态 + Err（与返回 error 同形态），不再向调用方上抛。
-func WithDisclosureActivator(fn func(tool string) error) DisclosureGateOption {
+// **正在激活的同一工具**递归 Check——该调用会等待本次激活完成（即等待自身；
+// 该递归 Check 的 ctx 取消可退出，#145）。激活器 panic 被门禁转为激活通道
+// 故障（oagentkit/mcpkit#89）：inflight 清理照走、等待者醒来，Check 返回可重
+// 态 + Err（与返回 error 同形态），不再向调用方上抛。
+func WithDisclosureActivator(fn func(ctx context.Context, tool string) error) DisclosureGateOption {
 	return func(g *DisclosureGate) { g.activate = fn }
 }
 
@@ -158,10 +166,17 @@ func NewDisclosureGate(catalog Catalog, loaded []string, opts ...DisclosureGateO
 //   - 目录外 → 拒绝且**不可重试**（DisclosureTerminalDenied）：重试不会成功，
 //     文案指示模型换工具。
 //
+// 取消语义（oagentkit/mcpkit#145）：激活是宿主外部动作（reload/热刷新——可慢
+// 可挂），ctx 取消/超时是调用方的逃生门：等待者 select call.done 与 ctx.Done()
+// 各自可退（等待者先退是安全的——失败代由 leader 收尾，激活成功后已入集，
+// 同名的下一次 Check 照常放行）；leader 自身 ctx 已死时不启动激活器（inflight
+// 照常收尾），等待中的激活器拿到调用方 ctx，长操作可感知取消。三态判定不受
+// ctx 影响——取消只影响「激活等待」，目录事实照常输出。
+//
 // 锁纪律（oagentkit/mcpkit#75）：g.mu 只罩住 loaded/inflight 的读写与三态
 // 判定——激活器调用在锁外执行，慢激活不把 Check/Loaded/Catalog 拖成全局
 // 串行段，激活器回查门禁也不自死锁。
-func (g *DisclosureGate) Check(tool string) DisclosureVerdict {
+func (g *DisclosureGate) Check(ctx context.Context, tool string) DisclosureVerdict {
 	// 三态判定与单飞注册同一临界区：loaded 复查、目录判定、inflight 注册
 	// 原子完成。拆成两段锁会让迟到者漏看刚入集的 loaded 又看不到进行中的
 	// 激活，从而重复激活（TestDisclosureConcurrentCheck 的「恰好一次」契约）。
@@ -198,7 +213,19 @@ func (g *DisclosureGate) Check(tool string) DisclosureVerdict {
 	g.mu.Unlock()
 
 	if !leader {
-		<-call.done // 等 leader 在锁外跑完激活器（等的是激活，不是锁）
+		// 等 leader 在锁外跑完激活器（等的是激活，不是锁）；ctx 可退
+		//（oagentkit/mcpkit#145）——等待者先退是安全的：激活成功后已入集，
+		// 同名的下一次 Check 照常放行；激活失败代由 leader 收尾。
+		select {
+		case <-call.done:
+		case <-ctx.Done():
+			return DisclosureVerdict{
+				State:    DisclosureRetryableDenied,
+				Tool:     tool,
+				Guidance: g.retryableGuidance(tool),
+				Err:      ctx.Err(),
+			}
+		}
 		if call.err != nil {
 			// 同代激活失败如实透传（Err 交处置层告警）；失败代已从 inflight
 			// 移除，下一次 Check 自动起新代重试
@@ -212,7 +239,24 @@ func (g *DisclosureGate) Check(tool string) DisclosureVerdict {
 		return g.allowedIfLoaded(tool)
 	}
 
-	err := g.activateGuarded(tool) // 锁外：慢激活/re-entrant 回查均安全（#75）；panic 转错误（#89）
+	// leader：ctx 已死不启动激活器（激活是宿主外部动作，不给已取消的调用
+	// 放大等待面）；inflight 照常收尾，等待者醒来拿到取消语义。
+	if err := ctx.Err(); err != nil {
+		err = fmt.Errorf("mcp: 披露激活未执行（调用方 ctx 已取消）: %w", err)
+		g.mu.Lock()
+		call.err = err
+		delete(g.inflight, tool)
+		close(call.done)
+		g.mu.Unlock()
+		return DisclosureVerdict{
+			State:    DisclosureRetryableDenied,
+			Tool:     tool,
+			Guidance: g.retryableGuidance(tool),
+			Err:      err,
+		}
+	}
+
+	err := g.activateGuarded(ctx, tool) // 锁外：慢激活/re-entrant 回查均安全（#75）；panic 转错误（#89）
 	g.mu.Lock()
 	call.err = err
 	if err == nil {
@@ -244,14 +288,15 @@ func (g *DisclosureGate) Check(tool string) DisclosureVerdict {
 // 卡死且无观测信号。与本仓依赖的 concurrency/singleflight.Do 同口径：panic 转
 // error，leader 侧走既有失败收尾（call.err/delete/close——defer/finally 语义，
 // panic 与 error 同一出口），等待者醒来拿到同代「激活通道故障」语义（#75），
-// 失败代不留痕迹，下一次 Check 起新代重试。
-func (g *DisclosureGate) activateGuarded(tool string) (err error) {
+// 失败代不留痕迹，下一次 Check 起新代重试。ctx 直通激活器（#145）：宿主长操作
+// 可感知调用方取消。
+func (g *DisclosureGate) activateGuarded(ctx context.Context, tool string) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("mcp: 披露激活器 panic: %v", r)
 		}
 	}()
-	return g.activate(tool)
+	return g.activate(ctx, tool)
 }
 
 // allowedIfLoaded 激活完成后的放行复判：并发同代激活里，等待者在 leader 成功

@@ -5,6 +5,7 @@ package mcp
 // 必成」的闭环。
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -21,19 +22,19 @@ func newGateCatalog() Catalog {
 func TestDisclosureThreeStates(t *testing.T) {
 	var activated []string
 	g := NewDisclosureGate(newGateCatalog(), []string{"search"},
-		WithDisclosureActivator(func(name string) error {
+		WithDisclosureActivator(func(_ context.Context, name string) error {
 			activated = append(activated, name)
 			return nil
 		}))
 
 	// 已披露 → 放行，无文案
-	v := g.Check("search")
+	v := g.Check(t.Context(), "search")
 	if !v.Allowed() || v.State != DisclosureAllowed || v.Guidance != "" {
 		t.Fatalf("已披露应放行: %+v", v)
 	}
 
 	// 目录内未披露 → 拒绝但可重试 + 顺手激活
-	v = g.Check("write")
+	v = g.Check(t.Context(), "write")
 	if v.Allowed() || !v.Retryable() || v.State != DisclosureRetryableDenied {
 		t.Fatalf("目录内未披露应拒但可重试: %+v", v)
 	}
@@ -44,12 +45,12 @@ func TestDisclosureThreeStates(t *testing.T) {
 		t.Fatalf("可重试文案应点名工具并指示重试: %q", v.Guidance)
 	}
 	// 激活后重试必成：同名再次判定放行
-	if v := g.Check("write"); !v.Allowed() {
+	if v := g.Check(t.Context(), "write"); !v.Allowed() {
 		t.Fatalf("激活后重试应放行: %+v", v)
 	}
 
 	// 目录外 → 拒绝且不可重试，文案指示换工具
-	v = g.Check("drop")
+	v = g.Check(t.Context(), "drop")
 	if v.Allowed() || v.Retryable() || v.State != DisclosureTerminalDenied {
 		t.Fatalf("目录外应拒且不可重试: %+v", v)
 	}
@@ -65,11 +66,11 @@ func TestDisclosureThreeStates(t *testing.T) {
 // 门禁不代激活、不改已披露集。
 func TestDisclosureNoActivator(t *testing.T) {
 	g := NewDisclosureGate(newGateCatalog(), []string{"search"})
-	v := g.Check("write")
+	v := g.Check(t.Context(), "write")
 	if !v.Retryable() || v.Activated {
 		t.Fatalf("无激活器应可重试但不代激活: %+v", v)
 	}
-	if v := g.Check("write"); v.Allowed() {
+	if v := g.Check(t.Context(), "write"); v.Allowed() {
 		t.Fatal("未激活不得放行")
 	}
 	if got := g.Loaded(); len(got) != 1 || got[0] != "search" {
@@ -82,12 +83,12 @@ func TestDisclosureNoActivator(t *testing.T) {
 func TestDisclosureActivatorError(t *testing.T) {
 	boom := errors.New("reload refused")
 	g := NewDisclosureGate(newGateCatalog(), nil,
-		WithDisclosureActivator(func(string) error { return boom }))
-	v := g.Check("write")
+		WithDisclosureActivator(func(_ context.Context, _ string) error { return boom }))
+	v := g.Check(t.Context(), "write")
 	if !v.Retryable() || v.Activated || !errors.Is(v.Err, boom) {
 		t.Fatalf("激活失败应保可重态并上抛 Err: %+v", v)
 	}
-	if v := g.Check("write"); v.Allowed() {
+	if v := g.Check(t.Context(), "write"); v.Allowed() {
 		t.Fatal("激活失败的调用不得进入已披露集")
 	}
 }
@@ -99,10 +100,10 @@ func TestDisclosureGuidanceOverride(t *testing.T) {
 			Retryable: "WAIT:%s",
 			Terminal:  "STOP:%s",
 		}))
-	if got := g.Check("write").Guidance; got != "WAIT:write" {
+	if got := g.Check(t.Context(), "write").Guidance; got != "WAIT:write" {
 		t.Fatalf("覆写可重试文案未生效: %q", got)
 	}
-	if got := g.Check("drop").Guidance; got != "STOP:drop" {
+	if got := g.Check(t.Context(), "drop").Guidance; got != "STOP:drop" {
 		t.Fatalf("覆写终止文案未生效: %q", got)
 	}
 }
@@ -110,7 +111,7 @@ func TestDisclosureGuidanceOverride(t *testing.T) {
 // TestDisclosureEmptyCatalog 空目录：一切判定都是目录外终止（没有任何工具可给）。
 func TestDisclosureEmptyCatalog(t *testing.T) {
 	g := NewDisclosureGate(NewCatalog("srv", nil), nil)
-	if v := g.Check("any"); v.Allowed() || v.Retryable() {
+	if v := g.Check(t.Context(), "any"); v.Allowed() || v.Retryable() {
 		t.Fatalf("空目录应一律终止拒绝: %+v", v)
 	}
 }
@@ -121,7 +122,7 @@ func TestDisclosureConcurrentCheck(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}
 	g := NewDisclosureGate(newGateCatalog(), []string{"search"},
-		WithDisclosureActivator(func(name string) error {
+		WithDisclosureActivator(func(_ context.Context, name string) error {
 			mu.Lock()
 			calls[name]++
 			mu.Unlock()
@@ -132,7 +133,7 @@ func TestDisclosureConcurrentCheck(t *testing.T) {
 		wg.Add(1)
 		go func() { // -race 回归：loaded 集的读改写须在锁内
 			defer wg.Done()
-			g.Check("write")
+			g.Check(t.Context(), "write")
 		}()
 	}
 	wg.Wait()
@@ -157,7 +158,7 @@ func TestDisclosureActivatorPanicRecovers(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	g := NewDisclosureGate(newGateCatalog(), nil,
-		WithDisclosureActivator(func(string) error {
+		WithDisclosureActivator(func(_ context.Context, _ string) error {
 			mu.Lock()
 			calls++
 			n := calls
@@ -173,7 +174,7 @@ func TestDisclosureActivatorPanicRecovers(t *testing.T) {
 	var v DisclosureVerdict
 	done := make(chan struct{})
 	go func() {
-		v = g.Check("write")
+		v = g.Check(t.Context(), "write")
 		close(done)
 	}()
 	select {
@@ -198,10 +199,10 @@ func TestDisclosureActivatorPanicRecovers(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("panic 代应恰好执行一次激活器，实际 %d", n)
 	}
-	if v2 := g.Check("write"); !v2.Retryable() || !v2.Activated || v2.Err != nil {
+	if v2 := g.Check(t.Context(), "write"); !v2.Retryable() || !v2.Activated || v2.Err != nil {
 		t.Fatalf("新一代激活应成功: %+v", v2)
 	}
-	if v3 := g.Check("write"); !v3.Allowed() {
+	if v3 := g.Check(t.Context(), "write"); !v3.Allowed() {
 		t.Fatalf("恢复后重试应放行: %+v", v3)
 	}
 }
@@ -213,17 +214,17 @@ func TestDisclosureActivatorPanicWakesWaiters(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	g := NewDisclosureGate(newGateCatalog(), nil,
-		WithDisclosureActivator(func(string) error {
+		WithDisclosureActivator(func(_ context.Context, _ string) error {
 			close(entered)
 			<-release
 			panic("activator exploded")
 		}))
 
 	leader := make(chan DisclosureVerdict, 1)
-	go func() { leader <- g.Check("write") }()
+	go func() { leader <- g.Check(t.Context(), "write") }()
 	<-entered
 	join := make(chan DisclosureVerdict, 1)
-	go func() { join <- g.Check("write") }() // 加入首代，等 done 非等锁
+	go func() { join <- g.Check(t.Context(), "write") }() // 加入首代，等 done 非等锁
 	close(release)
 
 	select {
@@ -253,10 +254,10 @@ func TestDisclosureGuidanceNoVerbVerbatim(t *testing.T) {
 			Retryable: "工具未披露，请重试。",
 			Terminal:  "工具不在目录中，请改用目录内工具。",
 		}))
-	if got := g.Check("write").Guidance; got != "工具未披露，请重试。" {
+	if got := g.Check(t.Context(), "write").Guidance; got != "工具未披露，请重试。" {
 		t.Fatalf("无占位模板应原样输出（mcpkit#76）: %q", got)
 	}
-	if got := g.Check("drop").Guidance; got != "工具不在目录中，请改用目录内工具。" {
+	if got := g.Check(t.Context(), "drop").Guidance; got != "工具不在目录中，请改用目录内工具。" {
 		t.Fatalf("无占位模板应原样输出（mcpkit#76）: %q", got)
 	}
 }
@@ -270,11 +271,11 @@ func TestDisclosureGuidanceMultiVerb(t *testing.T) {
 			Retryable: "%s 于 %s：已激活，请原样重试。",
 			Terminal:  "100%% 不行：%s 在 %s 找不到，别再试 %s 了。",
 		}))
-	if got := g.Check("write").Guidance; got != "write 于 srv：已激活，请原样重试。" {
+	if got := g.Check(t.Context(), "write").Guidance; got != "write 于 srv：已激活，请原样重试。" {
 		t.Fatalf("双占位应依次注入工具名/server 名: %q", got)
 	}
 	want := "100% 不行：drop 在 srv 找不到，别再试 srv 了。"
-	if got := g.Check("drop").Guidance; got != want {
+	if got := g.Check(t.Context(), "drop").Guidance; got != want {
 		t.Fatalf("%% 转义与多占位异常: got %q want %q", got, want)
 	}
 }
@@ -283,7 +284,7 @@ func TestDisclosureGuidanceMultiVerb(t *testing.T) {
 func TestDisclosureGuidanceQuotedVerb(t *testing.T) {
 	g := NewDisclosureGate(newGateCatalog(), nil,
 		WithDisclosureGuidance(DisclosureGuidance{Terminal: "缺失：%q。"}))
-	if got := g.Check("drop").Guidance; got != `缺失："drop"。` {
+	if got := g.Check(t.Context(), "drop").Guidance; got != `缺失："drop"。` {
 		t.Fatalf("%%q 应带引号注入: %q", got)
 	}
 }
@@ -295,7 +296,7 @@ func TestDisclosureSlowActivatorNoSerialize(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	g := NewDisclosureGate(newGateCatalog(), nil,
-		WithDisclosureActivator(func(name string) error {
+		WithDisclosureActivator(func(_ context.Context, name string) error {
 			if name == "write" {
 				close(entered)
 				<-release // 慢激活：直到测试放行才返回
@@ -304,11 +305,11 @@ func TestDisclosureSlowActivatorNoSerialize(t *testing.T) {
 		}))
 
 	leader := make(chan DisclosureVerdict, 1)
-	go func() { leader <- g.Check("write") }()
+	go func() { leader <- g.Check(t.Context(), "write") }()
 	<-entered // 激活器已进入（此时旧实现正持 g.mu 阻塞所有后来者）
 
 	probe := make(chan DisclosureVerdict, 1)
-	go func() { probe <- g.Check("read") }() // 另一目录内工具：须即时判定+快激活
+	go func() { probe <- g.Check(t.Context(), "read") }() // 另一目录内工具：须即时判定+快激活
 	snap := make(chan []string, 1)
 	go func() { snap <- g.Loaded() }()
 
@@ -325,7 +326,7 @@ func TestDisclosureSlowActivatorNoSerialize(t *testing.T) {
 	if v := <-leader; !v.Retryable() || !v.Activated {
 		t.Fatalf("leader 应拒但已激活: %+v", v)
 	}
-	if v := g.Check("write"); !v.Allowed() {
+	if v := g.Check(t.Context(), "write"); !v.Allowed() {
 		t.Fatalf("激活完成后重试应放行: %+v", v)
 	}
 }
@@ -336,14 +337,14 @@ func TestDisclosureSlowActivatorNoSerialize(t *testing.T) {
 func TestDisclosureReentrantActivator(t *testing.T) {
 	var g *DisclosureGate // 先声明后赋值：激活器闭包回查 g 自身（激活器只在 Check 内触发，此时赋值早已完成）
 	g = NewDisclosureGate(newGateCatalog(), nil,
-		WithDisclosureActivator(func(name string) error {
+		WithDisclosureActivator(func(_ context.Context, name string) error {
 			_ = g.Loaded()  // 回查已披露集
 			_ = g.Catalog() // 回查目录
 			return nil
 		}))
 	done := make(chan struct{})
 	go func() {
-		g.Check("write")
+		g.Check(t.Context(), "write")
 		close(done)
 	}()
 	select {
@@ -365,7 +366,7 @@ func TestDisclosureActivationJoin(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	g := NewDisclosureGate(newGateCatalog(), nil,
-		WithDisclosureActivator(func(string) error {
+		WithDisclosureActivator(func(_ context.Context, _ string) error {
 			mu.Lock()
 			calls++
 			mu.Unlock()
@@ -375,10 +376,10 @@ func TestDisclosureActivationJoin(t *testing.T) {
 		}))
 
 	leader := make(chan DisclosureVerdict, 1)
-	go func() { leader <- g.Check("write") }()
+	go func() { leader <- g.Check(t.Context(), "write") }()
 	<-entered
 	join := make(chan DisclosureVerdict, 1)
-	go func() { join <- g.Check("write") }() // 加入进行中的激活：等 done 非等锁
+	go func() { join <- g.Check(t.Context(), "write") }() // 加入进行中的激活：等 done 非等锁
 	select {
 	case v := <-join:
 		t.Fatalf("等待者不得在激活完成前返回: %+v", v)

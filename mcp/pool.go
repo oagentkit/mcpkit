@@ -81,6 +81,10 @@ type ServerConfig struct {
 	// 调用方经 client.GetOAuthHandler 取 handler 驱动授权码+PKCE 流程；
 	// TokenStore 由调用方提供（进程内缓存失效后重 dial 仍能取回已授权 token）。
 	OAuth *OAuthClientConfig
+	// ClientInfo 自定义 initialize 客户端身份（oagentkit/mcpkit#150；nil = 缺省
+	// mcpkit@包版本，见 mcp.Version）。server 侧按 initialize 的 ClientInfo 归因
+	// 连接方——宿主自带身份（平台名/版本）时以此为准，本池不覆盖。
+	ClientInfo *mcp.Implementation
 }
 
 // OAuthClientConfig URL 传输的 OAuth2 装配输入（映射 mcp-go client.OAuthConfig；
@@ -161,6 +165,10 @@ type Pool struct {
 	baseCancel context.CancelFunc
 	// OnError 建连/列举失败回调（nil 安全）。返回错误不中断其余 server——
 	// 部分失败容忍：可用的工具照常返回，失败的 server 由调用方经钩子观测。
+	// 语义面：**只发真失败**——闲置回收是设计内行为（被回收的 server 下次
+	// 调用透明重建，ReapIdle doc），不经本回调（oagentkit/mcpkit#149：此前
+	// 借道 OnError，按失败率消费的宿主错误面被设计内事件灌满）；回收观测走
+	// OnReap。
 	OnError func(server string, err error)
 	// RequestMeta 每笔工具调用 _meta 注入来源（nil 安全；批次五十六 B，对标 ZCode
 	// request-context）。metaFn 在调用方 ctx 上取值，池不感知业务键；经 metaClient
@@ -176,6 +184,13 @@ type Pool struct {
 	// 升级后静默「能对话但无工具可调」。告警点名 server 与后果；与 OnError
 	// 同一串行化纪律。
 	OnWarn func(server, msg string)
+	// OnReap 闲置回收回调（nil 安全；oagentkit/mcpkit#149）：ReapIdle/
+	// StartIdleReaper 回收闲置连接时发射（idle = 触发回收的闲置阈值）。
+	// 回收是**设计内行为**（下次调用透明重建，非失败），与 OnError（真失败）
+	// 分通道——按失败率消费 OnError 的宿主不再被回收事件灌满错误面；想观测
+	// 回收节奏（调 maxIdle/interval）的宿主用本通道。与 OnError/OnWarn 同一
+	// errMu 串行化纪律。
+	OnReap func(server string, idle time.Duration)
 	// TextResult 工具调用结果剥壳（oagentkit/mcpkit#39）：true 时 InvokableRun
 	// 返回剥壳后的**文本内容**（UnwrapMCPText：content[].text 优先，回落
 	// structuredContent）而非完整 CallToolResult JSON 信封——宿主把返回值
@@ -219,6 +234,10 @@ type connState struct {
 // NewPool 创建连接池（建连延后到 Tools 调用时——允许启动期 MCP server 未就绪）。
 // Name 为空的配置忽略；重名保留先到者（后者忽略）——配置错误尽早收敛为确定性
 // 行为而非静默覆盖。
+//
+// 缺省客户端身份（oagentkit/mcpkit#150）：initialize 自报 mcpkit@包版本
+// （mcp.Version，发版经 ldflags 注入；server 侧按 ClientInfo 归因连接方）。
+// 宿主自带身份时按 server 配置 ServerConfig.ClientInfo 覆写。
 func NewPool(cfgs ...ServerConfig) *Pool {
 	baseCtx, cancel := context.WithCancel(context.Background())
 	p := &Pool{cfgs: map[string]ServerConfig{}, conns: map[string]*connState{},
@@ -595,6 +614,17 @@ func (p *Pool) notifyError(server string, err error) {
 	p.OnError(server, err)
 }
 
+// notifyReap 串行化 OnReap（与 OnError/OnWarn 同一 errMu 并发纪律）。
+// 闲置回收经本通道发射（oagentkit/mcpkit#149）：设计内行为不污染错误面。
+func (p *Pool) notifyReap(server string, idle time.Duration) {
+	if p.OnReap == nil {
+		return
+	}
+	p.errMu.Lock()
+	defer p.errMu.Unlock()
+	p.OnReap(server, idle)
+}
+
 // client 获取（lazy 建连 + 缓存）。失败时不缓存——下次调用重试。
 func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 	p.mu.Lock()
@@ -669,7 +699,7 @@ func (p *Pool) dialAndRegister(ctx context.Context, cfg ServerConfig) (client.MC
 			return nil, fmt.Errorf("mcp: %s client 启动失败: %w", cfg.Name, serr)
 		}
 	}
-	cli, protoVersion, err := initializeClient(cctx, cli, p.ElicitationHandler)
+	cli, protoVersion, err := initializeClient(cctx, cli, cfg.ClientInfo, p.ElicitationHandler)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: %s %w", cfg.Name, err)
 	}
@@ -706,11 +736,18 @@ func (st *connState) cachedClient() client.MCPClient {
 // initializeClient MCP 协议要求先 Initialize 才可调用；返回代际标记
 // （Initialize 后才可知，现代协议 Ping 是 no-op，探活路径须分流）。
 // 失败时关闭连接——调用方拿到 error 即连接已回收。
+// 客户端身份：cfg.ClientInfo 优先（宿主自带身份，#150），缺省 mcpkit@Version
+// （发版 ldflags 注入；server 侧按 ClientInfo 归因连接方，恒定/伪名会让升版
+// 在 server 侧不可见）。
 // 返回协商协议版本（raw 目录通道的现代协议判据；断言失败（测试桩）=空串=旧协议路径）。
-func initializeClient(ctx context.Context, cli client.MCPClient, elicitation client.ElicitationHandler) (client.MCPClient, string, error) {
+func initializeClient(ctx context.Context, cli client.MCPClient, clientInfo *mcp.Implementation, elicitation client.ElicitationHandler) (client.MCPClient, string, error) {
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "agentkit", Version: "1.0"}
+	if clientInfo != nil {
+		initReq.Params.ClientInfo = *clientInfo
+	} else {
+		initReq.Params.ClientInfo = mcp.Implementation{Name: "mcpkit", Version: Version}
+	}
 	if elicitation != nil {
 		// 能力声明与 handler 同装（不声明则支持 elicitation 的 server 不会发起）
 		initReq.Params.Capabilities.Elicitation = &mcp.ElicitationCapability{}
@@ -745,6 +782,11 @@ func (p *Pool) registerConn(name string, st *connState, cli client.MCPClient, tr
 		_ = cli.Close()
 		return existing, nil
 	}
+	// 连接换了目录必须重列（oagentkit/mcpkit#146 防御层）：detachLocked 已随连接
+	// 清目录，但 catalogFor 的并发写入可能在 detach 后、本注册前落进来（列举
+	// 所用连接已死）——残留目录会以旧工具面/schema 服务新连接，热换装变化
+	// 静默不可见。注册即清零，目录生命周期严格随连接代际。
+	st.catalog = nil
 	st.cli = cli
 	st.tr = tr
 	st.lastUsed = time.Now()

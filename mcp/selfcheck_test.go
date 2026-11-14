@@ -160,7 +160,10 @@ func TestClassifyToolResultPayload(t *testing.T) {
 	}{
 		{envelope("tool not found: read"), KindToolMissing},
 		{envelope("invalid params: missing required field"), KindInvalidArgs},
-		{envelope("some other business failure"), KindProtocol},
+		// 无明确信号的业务失败兜底归 unknown（oagentkit/mcpkit#144，此前归
+		// KindProtocol 且 Retryable==true——确定性业务失败被推给「修 server」
+		// 处置面并触发盲重试，与协议错的真实语义错位）。
+		{envelope("some other business failure"), KindUnknown},
 	}
 	for _, c := range cases {
 		got := ClassifyError(&ToolResultError{payload: []byte(c.payload)})

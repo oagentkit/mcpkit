@@ -18,7 +18,11 @@ type SelfcheckOptions struct {
 	// Server server 名（结果标识；缓存键 = 名 + 声明面指纹，
 	// 见 selfcheckCacheKey——mcpkit#109/#113）。
 	Server string
-	// Timeout 单次探测的超时预算（默认 10s）。
+	// Timeout **整轮自检**的超时预算（默认 10s）：initialize 握手 + ping +
+	// 列举 + ProbeTools 的逐工具探针**共享**这一个预算（oagentkit/mcpkit#143）。
+	// 工具数 × 单工具耗时超过它时，探针循环后半段标 ToolUnreachable（探针
+	// 预算耗尽，状态未知——不是 ToolFailed：本地预算不够 ≠ 工具坏了）。
+	// 给慢工具 server 跑 ProbeTools 请按需调大。
 	Timeout time.Duration
 	// TTL 目录缓存有效期（建议显式传 DefaultSelfcheckTTL=30s）。<= 0 表示
 	// 不缓存（每次都实拉）——实现与本文档一致（oagentkit/mcpkit#45：此前
@@ -319,9 +323,36 @@ func (s *Selfchecker) probe(ctx context.Context, cli client.MCPClient, opts Self
 		}
 	}
 	// 目录里的工具：默认 ok（连通即目录可见）；ProbeTools 时逐个实调。
+	// 预算纪律（oagentkit/mcpkit#143）：cctx 是整轮共享预算——探针循环内预算
+	// 耗尽时，剩余工具与中途超时的工具一律标 ToolUnreachable（状态未知），
+	// **不得**标 ToolFailed：本地预算不够 ≠ 工具坏了，两者的处置动作不同
+	//（调预算 vs 修工具）；且 ToolFailed + KindUnreachable 的组合（本地超时
+	// 被 ClassifyError 归 unreachable）会让 Status 与 Kind 自相矛盾、误导
+	// 监控分桶。
 	for _, n := range names {
 		if opts.ProbeTools {
+			if err := cctx.Err(); err != nil {
+				res.Tools = append(res.Tools, ToolCheck{
+					Tool:   n,
+					Status: ToolUnreachable,
+					Kind:   KindUnreachable,
+					Reason: "探针预算耗尽（未逐个核实，不等于工具坏了）",
+					Err:    err,
+				})
+				continue
+			}
 			if err := probeTool(cctx, cli, n, opts.ProbeArgs); err != nil {
+				if cctx.Err() != nil {
+					// 整轮预算在本次调用中途耗尽：结论是「未知」而非「调用失败」
+					res.Tools = append(res.Tools, ToolCheck{
+						Tool:   n,
+						Status: ToolUnreachable,
+						Kind:   KindUnreachable,
+						Reason: "探针预算耗尽（调用未完成，工具状态未知）",
+						Err:    err,
+					})
+					continue
+				}
 				res.Tools = append(res.Tools, ToolCheck{
 					Tool:   n,
 					Status: ToolFailed,

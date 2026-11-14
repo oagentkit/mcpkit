@@ -71,3 +71,29 @@ func TestRequestMetaInjected(t *testing.T) {
 }
 
 type ctxMetaKey struct{}
+
+// TestWithCallMetaSnapshot 回归（oagentkit/mcpkit#142）：注入即拷贝（快照语义）——
+// 注入后改写原 map 不得影响 ctx 里已注入的元数据（并发工具调用下 metaClient 读
+// 原活对象构成 data race；在途请求 _meta 被静默改写）。对齐 llm#68 同款纪律。
+func TestWithCallMetaSnapshot(t *testing.T) {
+	meta := map[string]any{"com.bianque/session_id": "s1"}
+	ctx := WithCallMeta(context.Background(), meta)
+	// 注入后改原 map：快照不变
+	meta["com.bianque/session_id"] = "s2"
+	meta["com.bianque/trace_id"] = "tr9"
+	got := CallMeta(ctx)
+	if got["com.bianque/session_id"] != "s1" {
+		t.Fatalf("改原 map 不应影响已注入快照, got %v", got)
+	}
+	if _, ok := got["com.bianque/trace_id"]; ok {
+		t.Fatalf("注入后新增键不应出现在快照, got %v", got)
+	}
+	// 空/nil 注入：零开销直通（原 ctx 原样返回，CallMeta 恒 nil）
+	if WithCallMeta(context.Background(), nil) != context.Background() {
+		t.Fatal("nil meta 应直通原 ctx")
+	}
+	empty := context.WithValue(context.Background(), ctxMetaKey{}, "sentinel")
+	if WithCallMeta(empty, map[string]any{}) != empty {
+		t.Fatal("空 meta 应直通原 ctx")
+	}
+}

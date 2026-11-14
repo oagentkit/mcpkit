@@ -6,7 +6,7 @@ import (
 	"slices"
 )
 
-// HealthState 健康三态。
+// HealthState 健康结论态（healthy / degraded / down / unknown 四态）。
 type HealthState string
 
 const (
@@ -17,6 +17,12 @@ const (
 	HealthDegraded HealthState = "degraded"
 	// HealthDown 全挂：server 连不上（基础设施故障）。
 	HealthDown HealthState = "down"
+	// HealthUnknown 没查：**零个** server 参与聚合（输入为空）——「没查」与
+	// 「查了都好」必须可区分（oagentkit/mcpkit#147）：空输入判 healthy 会让
+	// 巡检脚本/上游过滤故障在告警面静默变绿（假绿比没有这个功能更坏）。
+	// OK()==false；监控侧应把 unknown 与 down 分桶——前者是流程故障（修巡检），
+	// 后者是基础设施故障。
+	HealthUnknown HealthState = "unknown"
 )
 
 // MarshalJSON 输出可读状态名。
@@ -27,7 +33,8 @@ func (s HealthState) MarshalJSON() ([]byte, error) { return json.Marshal(string(
 // 判据可观察：**能看出是哪个 server 的哪个工具出的问题**——不是只给一个总体布尔。
 // Issues 逐条给出 server / tool / 分类 / 原因。
 type Health struct {
-	// State 三态结论。
+	// State 健康结论态（healthy / degraded / down / unknown——unknown = 零个
+	// server 参与，oagentkit/mcpkit#147）。
 	State HealthState
 	// Servers 参与聚合的 server 名（排序）。
 	Servers []string
@@ -106,8 +113,20 @@ func (h Health) OK() bool { return h.State == HealthHealthy || h.State == Health
 // 声明了却完全拿不到的那个 server，其能力是真缺失的。
 // 但 Issues 里会逐条列出，调用方能看出是「哪个 server 挂了」
 // 而不是笼统一个 down。
+//
+// ## 零个 server 参与时返回 unknown（不是 healthy）
+//
+// 空输入（nil / 空 slice）⇒ State=unknown（oagentkit/mcpkit#147）：「没查」
+// 与「查了都好」在告警面必须同形可辨——healthy 需要至少一个 server 参与
+// 才成立（「全可达」的真空真不构成全绿背书）。巡检脚本 server 列表解析
+// 失败 / 上游把结果过滤成空时，unknown 让监控分桶立刻看见流程故障，
+// 而不是静默变绿。
 func Aggregate(results []SelfcheckResult) Health {
 	h := Health{Total: len(results)}
+	if len(results) == 0 {
+		h.State = HealthUnknown // 空输入：没查 ≠ 查了都好（oagentkit/mcpkit#147）
+		return h
+	}
 	issues := make([]HealthIssue, 0)
 	servers := make([]string, 0, len(results))
 
