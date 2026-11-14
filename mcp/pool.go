@@ -236,7 +236,7 @@ type connState struct {
 // 行为而非静默覆盖。
 //
 // 缺省客户端身份（oagentkit/mcpkit#150）：initialize 自报 mcpkit@包版本
-//（mcp.Version，发版经 ldflags 注入；server 侧按 ClientInfo 归因连接方）。
+// （mcp.Version，发版经 ldflags 注入；server 侧按 ClientInfo 归因连接方）。
 // 宿主自带身份时按 server 配置 ServerConfig.ClientInfo 覆写。
 func NewPool(cfgs ...ServerConfig) *Pool {
 	baseCtx, cancel := context.WithCancel(context.Background())
@@ -737,7 +737,7 @@ func (st *connState) cachedClient() client.MCPClient {
 // （Initialize 后才可知，现代协议 Ping 是 no-op，探活路径须分流）。
 // 失败时关闭连接——调用方拿到 error 即连接已回收。
 // 客户端身份：cfg.ClientInfo 优先（宿主自带身份，#150），缺省 mcpkit@Version
-//（发版 ldflags 注入；server 侧按 ClientInfo 归因连接方，恒定/伪名会让升版
+// （发版 ldflags 注入；server 侧按 ClientInfo 归因连接方，恒定/伪名会让升版
 // 在 server 侧不可见）。
 // 返回协商协议版本（raw 目录通道的现代协议判据；断言失败（测试桩）=空串=旧协议路径）。
 func initializeClient(ctx context.Context, cli client.MCPClient, clientInfo *mcp.Implementation, elicitation client.ElicitationHandler) (client.MCPClient, string, error) {

@@ -327,7 +327,7 @@ var (
 // 代际绑定（oagentkit/mcpkit#146）：connState 跨重建复用（detachLocked 只清字段
 // 不换对象），列表又不持 lease（inFlight==0，回收不被挡）——「列举成功」与
 // 「落缓存」之间连接可被 evict/redial 换代。落缓存前比对 st.cli 与列举所用连接
-//（与 evict 的实例比对同款）：换代即不写，旧连接的目录不得写到新连接上——否则
+// （与 evict 的实例比对同款）：换代即不写，旧连接的目录不得写到新连接上——否则
 // 热换装的工具面变化静默不可见，probeFingerprint 的比对基准也被旧目录污染。
 func (p *Pool) catalogFor(ctx context.Context, cfg ServerConfig, cli client.MCPClient) ([]toolEntry, error) {
 	st := p.connLockedOrNil(cfg.Name)

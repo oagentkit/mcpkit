@@ -171,7 +171,7 @@ func probeFingerprintOfEntries(entries []toolEntry) string {
 //
 // 回收事件经 OnReap 发射（oagentkit/mcpkit#149）：回收是设计内行为（透明重建），
 // 不是失败——此前借道 OnError，按失败率消费回调的宿主错误面被周期性回收灌满
-//（StartIdleReaper 短 interval 时尤甚），真失败信号被淹没。
+// （StartIdleReaper 短 interval 时尤甚），真失败信号被淹没。
 func (p *Pool) ReapIdle(maxIdle time.Duration) int {
 	if maxIdle <= 0 {
 		return 0

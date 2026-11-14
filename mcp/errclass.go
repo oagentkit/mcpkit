@@ -108,9 +108,9 @@ func (k *ErrorKind) UnmarshalJSON(data []byte) error {
 // 关键：**工具不存在与参数错重试没有意义**——重试不会让 server 长出那个工具，
 // 也不会让非法参数变合法。盲目重试会把「配置问题」伪装成「偶发抖动」。
 // 同理，KindUnknown（判不出，含 isError:true 无明确信号的业务失败）也**不重试**
-//（oagentkit/mcpkit#144）：这类 payload 里混着大量确定性业务失败（资源不存在、
+// （oagentkit/mcpkit#144）：这类 payload 里混着大量确定性业务失败（资源不存在、
 // 权限不足、业务校验拒绝），保守不重试——错在安全侧，宁可漏掉可重试的真抖动
-//（调用方还有传输层自愈兜底），不把确定性失败刷成重试风暴。
+// （调用方还有传输层自愈兜底），不把确定性失败刷成重试风暴。
 func (k ErrorKind) Retryable() bool {
 	switch k {
 	case KindUnreachable:
