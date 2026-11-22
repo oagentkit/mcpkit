@@ -211,6 +211,14 @@ tag 那一刻没有独立证据（tag 受保护、不可重打，而「tag 后�
 关联：oagentkit/.github 的 tag 面接线。
 
 
+- 文档(changelog)：预写 v0.15.0 待发版段 + 地板随迁 pkg v0.60.0
+
+* docs(changelog): 预写 v0.15.0 待发版段
+由 release.py prewrite 生成。
+本提交**只**改 CHANGELOG.md——混入别的文件会被 squash 合成一个提交，
+生成器按「实际改了哪些文件」剔除零信息量提交的判据就会失效。
+* chore: 依赖地板随迁 oekit/pkg v0.60.0
+
 - 文档(AGENTS)：错误协议宣告对齐实际（stdlib 同型 sentinel；BizError 限 HTTP 宿主，本 org 库层不用）
 
 ## [v0.14.0] — 2026-11-14
