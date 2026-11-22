@@ -20,7 +20,7 @@
 
 ### 错误处理
 
-- 一律使用 `github.com/oekit/pkg/errors`；业务错误用 BizError。
+- 错误哨兵一律 Err 前缀 + stdlib 同型 errors（oekit/pkg/errors 与 stdlib 在 New/Is/As/Unwrap 上同型透传，`errors.Is` 跨包判定成立）；本 org 是纯库层、无 HTTP 业务面，**不使用 BizError**（那是 oekit 有 HTTP 出口宿主的错误载体）——需要结构化错误分类时用各包既有分类学（guardx/toolfail.Class、mcpkit ErrorKind），宿主侧 HTTP 层自行对接 oekit/pkg/errors BizError。
 - 所有 error 禁止 `_` 忽略。
 
 ### 并发安全
