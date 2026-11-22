@@ -132,7 +132,7 @@ func TestSelfHealConcurrentHealNoHealthyEvict(t *testing.T) {
 		}
 		return g, nil, nil
 	}
-	defer p.Close(context.Background())
+	defer func() { _ = p.Close(context.Background()) }()
 
 	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", AllowAll: true}})
 	if err != nil || len(tr.Tools) != 1 {

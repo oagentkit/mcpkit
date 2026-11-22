@@ -120,7 +120,7 @@ func TestStartIdleReaperStopsOnClose(t *testing.T) {
 	p.StartIdleReaper(time.Millisecond, time.Minute)
 	p.StartIdleReaper(time.Millisecond, time.Minute) // 幂等
 	time.Sleep(5 * time.Millisecond)
-	p.Close(context.Background())
+	_ = p.Close(context.Background())
 	// Close 后 reapStop 关闭，协程退出（无泄漏断言靠 race/无阻塞；这里只验证不 panic）。
 }
 

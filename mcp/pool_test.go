@@ -67,7 +67,7 @@ func TestToolsWhitelist(t *testing.T) {
 	}
 	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "calc", cli)
-	defer p.Close(context.Background())
+	defer func() { _ = p.Close(context.Background()) }()
 
 	// 白名单只暴露 calculate（other 不给 agent）
 	tr, err := p.Tools(context.Background(), []ToolSpec{
@@ -112,7 +112,7 @@ func TestToolsEmptyAllowGrantsNone(t *testing.T) {
 	cli, _ := client.NewInProcessClient(srv)
 	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "calc", cli)
-	defer p.Close(context.Background())
+	defer func() { _ = p.Close(context.Background()) }()
 
 	// 空 Allow = 不授予任何工具（缺省拒绝）
 	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "calc"}})
@@ -140,7 +140,7 @@ func TestToolsAllowAllGrantsAll(t *testing.T) {
 			cli, _ := client.NewInProcessClient(srv)
 			p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 			injectClient(t, p, "calc", cli)
-			defer p.Close(context.Background())
+			defer func() { _ = p.Close(context.Background()) }()
 
 			tr, err := p.Tools(context.Background(), []ToolSpec{tc.spec})
 			if err != nil {
@@ -159,7 +159,7 @@ func TestToolsAllowStillFilters(t *testing.T) {
 	cli, _ := client.NewInProcessClient(srv)
 	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "calc", cli)
-	defer p.Close(context.Background())
+	defer func() { _ = p.Close(context.Background()) }()
 
 	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "calc", Allow: []string{"calculate"}}})
 	if err != nil {
@@ -194,7 +194,7 @@ func TestToolsPartialFailureTolerated(t *testing.T) {
 			errCount.Add(1)
 		}
 	}
-	defer p.Close(context.Background())
+	defer func() { _ = p.Close(context.Background()) }()
 
 	tr, err := p.Tools(context.Background(), []ToolSpec{
 		{Server: "broken"},
@@ -255,8 +255,8 @@ func TestPoolClose(t *testing.T) {
 	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "calc", cli)
 
-	p.Close(context.Background())
-	p.Close(context.Background()) // 幂等
+	_ = p.Close(context.Background())
+	_ = p.Close(context.Background()) // 幂等
 	if hasConn(p, "calc") {
 		t.Fatal("Close 后缓存应清空")
 	}
@@ -363,7 +363,7 @@ func hasConn(p *Pool, name string) bool {
 // 缓存热时同样的 ctx 走快路径正常返回，两种形态行为须一致。
 func TestToolsCancelledCtxColdCacheReturnsError(t *testing.T) {
 	p := NewPool(ServerConfig{Name: "x", Command: []string{"true"}})
-	defer p.Close(context.Background())
+	defer func() { _ = p.Close(context.Background()) }()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	tr, err := p.Tools(ctx, []ToolSpec{{Server: "x"}})
@@ -399,7 +399,7 @@ func TestStdioChildSurvivesDialCancel(t *testing.T) {
 	p := NewPool(ServerConfig{Name: "srv", Timeout: 10 * time.Second,
 		Env:     []string{"BQ_MCP_STDIO_HELPER=1"}, // ChildEnv 白名单字面量透传（helper 守卫标记）
 		Command: []string{testBin, "-test.run=TestStdioServerHelper", "-test.v=false"}})
-	defer p.Close(context.Background())
+	defer func() { _ = p.Close(context.Background()) }()
 
 	// 拨号 ctx：建连成功后立即取消（复刻 client() 返回即 cancel 的时序）
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)

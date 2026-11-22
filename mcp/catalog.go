@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/oagentkit/mcpkit/iface"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -233,14 +234,9 @@ func (m *invokableTool) callName() string {
 	return m.wireName
 }
 
-// RawToolName 原始工具名（oagentkit/mcpkit#46）：暴露名带 server 命名空间是
-// 给模型看的；按名做判定的消费方（动词启发式/只读白名单/审计归类）要的是
-// 原始名——此前它只在包内流通，消费方拿到暴露名即静默漏判，各自实现一遍
-// 剥前缀且各自漏。经 tool.BaseTool 类型断言本接口取原始名（比字符串剥前缀
-// 可靠——server 名含 "." 时字符串剥离有歧义）。
-type RawNamer interface {
-	RawToolName() string
-}
+// RawNamer 原始工具名能力接口：单源在 iface（协议中立，下游零 mcp-go 消费），
+// 本包别名透传；语义文档见 iface.RawNamer。
+type RawNamer = iface.RawNamer
 
 func (m *invokableTool) RawToolName() string { return m.callName() }
 
@@ -297,7 +293,10 @@ func (m *invokableTool) InvokableRun(ctx context.Context, args string, _ ...tool
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to call mcp tool: %w", err)
+		// 出口包定协议层分类（ClassifiedError 保链，errors.Is/As 穿透）：消费方
+		// 零 mcp-go 地板（iface.KindOf 纯解包）的契约前提——协议层事实在出口
+		// 落定，消费方不再触协议实现。
+		return "", Classify(fmt.Errorf("failed to call mcp tool: %w", err))
 	}
 	marshaled, err := json.Marshal(result)
 	if err != nil {
