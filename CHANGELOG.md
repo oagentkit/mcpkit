@@ -2,6 +2,18 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.15.1] — 2026-11-23
+
+- 文档：依赖清单对齐 go.mod 实际（runtime 依赖边已随 procx 单源解除）
+
+本仓对 runtime 的依赖只有 procx.ChildEnv 一条，切 eekit/pkg/procx 单源后
+该依赖边整条消失 ⇒ go.mod 里已无 runtime，**但 README/AGENTS 的
+「本仓依赖的矩阵内仓」清单仍列着 runtime**。
+清单口径 = go.mod 的**直接**矩阵内依赖（// indirect 不列）⇒ 清单与事实对不上时，
+改清单，不改判据（verify_repo_dep_inventory.py）。
+连带把正文里已失效的 `runtime.ChildEnv` 改成 `pkg/procx.ChildEnv`。
+
+
 ## [v0.15.0] — 2026-11-23
 
 ### 重构：Pool 生命周期 Close(ctx) 契约 + procx 单源切换 + iface 协议中立包
