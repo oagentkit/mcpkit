@@ -14,7 +14,7 @@ go get github.com/oagentkit/mcpkit
 
 **tier 2** — 集成层，依赖 tier0/tier1 + 重第三方地板。
 
-- 本仓依赖的矩阵内仓：`runtime`。
+- 本仓依赖的矩阵内仓：（无）。
 
 ## 外部依赖地板
 
