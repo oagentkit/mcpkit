@@ -15,7 +15,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/oagentkit/runtime/procx"
+	pkgprocx "github.com/oekit/pkg/procx"
 )
 
 // newTestServer 起 in-process MCP server：注册 calculate + other 两个工具。
@@ -273,7 +273,7 @@ func TestWhitelistEnv(t *testing.T) {
 	t.Setenv("AK_MCP_SECRET_TOKEN", "s3cret")
 	t.Setenv("AK_MCP_PLAIN", "v=1") // 值里含 = 的字面透传
 
-	out := procx.ChildEnv([]string{"AK_MCP_SECRET_TOKEN", "AK_MCP_MISSING_VAR", "FOO=bar"})
+	out := pkgprocx.ChildEnv([]string{"AK_MCP_SECRET_TOKEN", "AK_MCP_MISSING_VAR", "FOO=bar"})
 	joined := strings.Join(out, "\n")
 
 	if !strings.Contains(joined, "AK_MCP_SECRET_TOKEN=s3cret") {
@@ -287,14 +287,14 @@ func TestWhitelistEnv(t *testing.T) {
 	}
 	// 核心安全断言：当前进程的其它环境变量（哪怕名字可疑）一律不继承。
 	// 允许集 = procx.ChildEnv 基础白名单（并集口径）+ 白名单条目 + 禁交互追加项。
+	// 允许集 = oekit/pkg/procx 基础白名单（procx 收敛后单源；agent 配置目录键
+	// 不在其中——MCP server 不是 CLI agent，收紧后按 ServerConfig.Env 显式声明）。
 	allowed := map[string]bool{
 		"PATH": true, "HOME": true, "TMPDIR": true, "USER": true, "LOGNAME": true,
-		"SHELL": true, "LANG": true, "LC_ALL": true, "TERM": true,
+		"SHELL": true, "LANG": true, "LC_ALL": true, "TERM": true, "TZ": true,
 		"HTTP_PROXY": true, "HTTPS_PROXY": true, "NO_PROXY": true,
 		"http_proxy": true, "https_proxy": true, "no_proxy": true,
-		"SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
-		"CLAUDE_CONFIG_DIR": true, "OPENCODE_CONFIG": true,
-		"XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true,
+		"SSL_CERT_FILE": true, "SSL_CERT_DIR": true, "HF_TOKEN": true,
 		"GIT_TERMINAL_PROMPT": true, "CI": true, "FOO": true,
 	}
 	for _, kv := range out {
@@ -310,7 +310,7 @@ func TestWhitelistEnvRealSubprocess(t *testing.T) {
 	t.Setenv("AK_MCP_PARENT_SECRET", "topsecret") // 未列入白名单 → 不得继承
 	t.Setenv("AK_MCP_ALLOWED", "okvalue")         // 列入白名单 → 应透传
 	cmd := exec.Command("env")
-	cmd.Env = procx.ChildEnv([]string{"AK_MCP_ALLOWED"})
+	cmd.Env = pkgprocx.ChildEnv([]string{"AK_MCP_ALLOWED"})
 	out, err := cmd.Output()
 	if err != nil {
 		t.Skipf("无法运行 env: %v", err)

@@ -26,7 +26,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 
-	"github.com/oagentkit/runtime/procx"
+	pkgprocx "github.com/oekit/pkg/procx"
 
 	"github.com/oagentkit/mcpkit/mcp"
 )
@@ -187,7 +187,7 @@ func printText(res mcp.SelfcheckResult, h mcp.Health) {
 }
 
 // newStdioClient stdio 传输建连（CLI 侧）。环境纪律与池侧 dialStdio 同源单表：
-// 经 CommandFunc 接管 exec.Cmd，cmd.Env = procx.ChildEnv(env)——白名单 + --env
+// 经 CommandFunc 接管 exec.Cmd，cmd.Env = pkgprocx.ChildEnv(env)——白名单 + --env
 // 显式放行，**绝不继承全量 os.Environ()**（oagentkit/mcpkit#141：此前便捷
 // 构造器把空 env 补成 os.Environ()，注释声称的「不继承任何环境变量（防密钥
 // 泄漏）」与实现完全相反——宿主 API Key/云凭证全量交给待执行的外部 server）。
@@ -200,7 +200,7 @@ func newStdioClient(command string, args []string, env []string) (*client.Client
 // 的实际落点（runtime/procx/env.go 为全仓库子进程环境纪律单一事实源）。
 func stdioCommandFunc(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 	cmd := exec.CommandContext(context.WithoutCancel(ctx), command, args...)
-	cmd.Env = procx.ChildEnv(env)
+	cmd.Env = pkgprocx.ChildEnv(env)
 	return cmd, nil
 }
 

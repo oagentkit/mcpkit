@@ -37,7 +37,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/oekit/concurrency/singleflight"
 
-	"github.com/oagentkit/runtime/procx"
+	pkgprocx "github.com/oekit/pkg/procx"
 )
 
 // DefaultTimeout 连接与初始化的缺省超时。
@@ -878,7 +878,7 @@ func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.Clien
 	t := transport.NewStdioWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
 		transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 			cmd := exec.CommandContext(context.WithoutCancel(ctx), command, args...)
-			cmd.Env = procx.ChildEnv(env)
+			cmd.Env = pkgprocx.ChildEnv(env)
 			cmd.Dir = cfg.Dir
 			return cmd, nil
 		}))
