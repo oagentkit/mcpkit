@@ -6,14 +6,14 @@ package mcp
 
 import (
 	"encoding/json"
+	"github.com/oagentkit/mcpkit/iface"
 
 	"github.com/cloudwego/eino/components/tool"
 )
 
-// OutputSchemer 工具出参 schema 的可选能力接口。
-type OutputSchemer interface {
-	OutputSchema() json.RawMessage
-}
+// OutputSchemer 工具出参 schema 的可选能力接口：单源在 iface（协议中立），
+// 本包别名透传；语义文档见 iface.OutputSchemer。
+type OutputSchemer = iface.OutputSchemer
 
 // OutputSchemaOf 取工具的声明 outputSchema（尽力：装饰器链各自转发；断言失败或
 // 未声明返回 false）。

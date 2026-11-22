@@ -24,7 +24,7 @@ func TestModernProbeEvictsDeadConnection(t *testing.T) {
 	defer ts.Close()
 
 	p := NewPool(ServerConfig{Name: "srv", URL: ts.URL + "/mcp", Timeout: 5 * time.Second})
-	defer p.Close()
+	defer func() { _ = p.Close(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -70,7 +70,7 @@ func TestLegacyProbeRefreshesCatalogOnFingerprintChange(t *testing.T) {
 		})
 
 	p := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
-	defer p.Close()
+	defer func() { _ = p.Close(context.Background()) }()
 	injectClient(t, p, "srv", mustInProcessClient(t, srv)) // 注入连接 modern 缺省 false → legacy 代际
 
 	ctx := context.Background()
@@ -123,7 +123,7 @@ func TestLegacyProbeRefreshesCatalogOnFingerprintChange(t *testing.T) {
 // 摘除（下次调用重建），不得因 ping 已过而虚报存活。
 func TestLegacyProbeListFailureEvicts(t *testing.T) {
 	p := NewPool()
-	defer p.Close()
+	defer func() { _ = p.Close(context.Background()) }()
 	cli := &fakeClient{listErr: errors.New("tools/list refused")}
 	seedFake(p, "srv", cli)
 	if err := p.PingServer(context.Background(), "srv"); err == nil {
@@ -162,7 +162,7 @@ func TestReapIdleInvalidatesCatalog(t *testing.T) {
 // 协程会永无人停（泄漏）——必须拒绝。
 func TestStartIdleReaperAfterCloseRejected(t *testing.T) {
 	p := NewPool()
-	p.Close()
+	_ = p.Close(context.Background())
 	p.StartIdleReaper(time.Millisecond, time.Hour)
 	p.mu.Lock()
 	started := p.reaping

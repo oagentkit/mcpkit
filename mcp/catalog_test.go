@@ -221,7 +221,7 @@ func TestTextResultUnwrap(t *testing.T) {
 func TestCatalogForTransportSnapshotRace(t *testing.T) {
 	ts := rawFidelityServer(t)
 	p := NewPool(ServerConfig{Name: "srv", URL: ts.URL + "/mcp", Timeout: 5 * time.Second})
-	defer p.Close()
+	defer func() { _ = p.Close(context.Background()) }()
 
 	const rounds = 20
 	var wg sync.WaitGroup

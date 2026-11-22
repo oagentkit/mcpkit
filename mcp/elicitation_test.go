@@ -64,7 +64,7 @@ func TestElicitationHandlerWired(t *testing.T) {
 	p := NewPool(ServerConfig{Name: "srv", URL: ts.URL + "/mcp", Timeout: 5 * time.Second})
 	h := &acceptElicitHandler{}
 	p.ElicitationHandler = h
-	defer p.Close()
+	defer func() { _ = p.Close(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -98,7 +98,7 @@ func TestElicitationNoHandler(t *testing.T) {
 	defer ts.Close()
 
 	p := NewPool(ServerConfig{Name: "srv", URL: ts.URL + "/mcp", Timeout: 5 * time.Second})
-	defer p.Close()
+	defer func() { _ = p.Close(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

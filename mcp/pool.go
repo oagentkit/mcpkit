@@ -11,7 +11,7 @@
 //	        Headers: map[string]string{"Authorization": "Bearer " + tok}},
 //	    mcp.ServerConfig{Name: "lint", Command: []string{"lint-mcp", "serve"}},
 //	)
-//	defer pool.Close()
+//	defer pool.Close(context.Background())
 //	res, err := pool.Tools(ctx, []mcp.ToolSpec{{Server: "docs", Allow: []string{"search_docs"}}})
 //	// res.Tools = 装配成功的工具；res.Failed = 被容忍的失败面（server → 原因）
 //
@@ -37,7 +37,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/oekit/concurrency/singleflight"
 
-	"github.com/oagentkit/runtime/procx"
+	pkgprocx "github.com/oekit/pkg/procx"
 )
 
 // DefaultTimeout 连接与初始化的缺省超时。
@@ -878,7 +878,7 @@ func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.Clien
 	t := transport.NewStdioWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
 		transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 			cmd := exec.CommandContext(context.WithoutCancel(ctx), command, args...)
-			cmd.Env = procx.ChildEnv(env)
+			cmd.Env = pkgprocx.ChildEnv(env)
 			cmd.Dir = cfg.Dir
 			return cmd, nil
 		}))
@@ -949,44 +949,60 @@ func (c ServerConfig) requestTimeoutOr(d time.Duration) time.Duration {
 }
 
 // Close 关闭全部缓存连接并拒绝后续建连（幂等）；停止闲置回收协程。Close 后池不可复用。
+// 返回值聚合各连接的关闭错误（errors.Join，前缀 server 名）——「有连接没收干净」
+// 从 OnError 侧的隐式信号升级为返回值；全部干净返回 nil。ctx 是生命周期契约
+// 参数：Close 是立即路径（在飞调用撞传输错误，不做等待——要优雅收尾走 Drain），
+// ctx 当前不阻塞任何步骤，为宿主收口钩子（bootstrap AddResource 同型）直连而设。
 // 锁序：先在 p.mu 内标记 closed 并摘出各 connState 指针，释放后再逐个收连接——
 // 绝不在持 p.mu 时抢 st.mu（与 dialAndRegister 的写入路径交叉会死锁）。
-func (p *Pool) Close() {
+func (p *Pool) Close(ctx context.Context) error {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return
+		return nil
 	}
 	p.closed = true
-	states := make([]*connState, 0, len(p.conns))
-	for _, st := range p.conns {
-		states = append(states, st)
+	states := make([]namedConn, 0, len(p.conns))
+	for name, st := range p.conns {
+		states = append(states, namedConn{name: name, st: st})
 	}
 	p.reaping = false
 	cancel := p.baseCancel
 	p.mu.Unlock()
-	p.teardown(cancel, states)
+	return p.teardown(cancel, states)
+}
+
+// namedConn 断连收口的配对载体：connState 从 p.conns 摘出后不再携带名字，
+// 关闭错误聚合需要它指认「谁没关干净」。
+type namedConn struct {
+	name string
+	st   *connState
 }
 
 // teardown 断连收口（Close/Drain 共用；closed 已置位且状态已摘出，锁外执行）：
-// baseCtx 取消（连接生命周期 ctx + 带外请求通道终结）+ 逐 server 摘连接并 Close。
-func (p *Pool) teardown(cancel context.CancelFunc, states []*connState) {
+// baseCtx 取消（连接生命周期 ctx + 带外请求通道终结）+ 逐 server 摘连接并
+// Close，聚合非 nil 的关闭错误返回。
+func (p *Pool) teardown(cancel context.CancelFunc, states []namedConn) error {
 	if cancel != nil {
 		cancel() // 连接生命周期 ctx 收口（带外请求通道随连接关闭一并终结）
 	}
-	for _, st := range states {
-		st.mu.Lock()
-		cli := st.detachLocked()
-		st.mu.Unlock()
+	var closeErrs []error
+	for _, nc := range states {
+		nc.st.mu.Lock()
+		cli := nc.st.detachLocked()
+		nc.st.mu.Unlock()
 		if cli != nil {
-			_ = cli.Close()
+			if err := cli.Close(); err != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close mcp server %s: %w", nc.name, err))
+			}
 		}
 	}
+	return errors.Join(closeErrs...)
 }
 
 // CloseServer 关闭指定 server 的缓存连接并连带失效其目录缓存（幂等；无该
-// server 或无连接时静默返回）。被关闭的 server 下次调用透明重建（lazy 建连，
-// 与 evict/闲置回收同形）。
+// server 或无连接时静默返回 nil）。被关闭的 server 下次调用透明重建（lazy
+// 建连，与 evict/闲置回收同形）。
 //
 // 这是治理热换装（包声明/池/配置热替换）时对旧连接的**确定性断连路径**
 // （oagentkit/mcpkit#63）：此前 mcpkit 无按 server 的断连 API，热换装后旧
@@ -999,69 +1015,89 @@ func (p *Pool) teardown(cancel context.CancelFunc, states []*connState) {
 //
 // 在途调用**不等待**：旧连接上的在途调用将收到传输层错误并由自愈层透明
 // 重建（拒绝服务的是连接，不是调用）。要「等在飞收尾再断」的停机语义走 Drain。
-func (p *Pool) CloseServer(name string) {
+func (p *Pool) CloseServer(ctx context.Context, name string) error {
 	st := p.conn(name)
 	if st == nil {
-		return
+		return nil
 	}
 	st.mu.Lock()
 	cli := st.detachLocked()
 	st.mu.Unlock()
 	if cli != nil {
-		_ = cli.Close()
+		if err := cli.Close(); err != nil {
+			return fmt.Errorf("close mcp server %s: %w", name, err)
+		}
 	}
+	return nil
 }
+
+// ErrDrainIncomplete Drain 的排空窗口（ctx）期满仍有在飞调用——已带硬断返回，
+// 这笔调用会收到传输层错误。errors.Is 判定；不计入连接关闭错误（那是
+// teardown 返回值的一部分）。
+var ErrDrainIncomplete = errors.New("mcp: 排空窗口期满仍有在飞调用，已硬断")
 
 // Drain 停机收口（oagentkit/mcpkit#63）：**拒绝新取连 → 等在飞调用收尾 →
 // 断全部连接**。三步语义写死：
 //
 //  1. 立即置 closed——此后 Tools/client 一律报「池已关闭」，新连接/新目录
 //     装配/自愈 redial 全部 fail-fast（在飞调用不受此步影响，继续收尾）；
-//  2. 等待全部 server 的在途调用（leaseUse 登记）归零，上限 timeout
-//     （<= 0 = 不等待，立即进入断连）；超时则带着仍在飞的调用硬断——停机
-//     收口不得被单笔长调用无限阻塞；
+//  2. 等待全部 server 的在途调用（leaseUse 登记）归零，排空窗口由 ctx 编码
+//     （context.WithTimeout）：ctx 可取消（含 deadline）时等到在飞归零或
+//     窗口结束；context.Background() 即不等待立即硬断（旧 timeout<=0 形态）。
+//     期满则带着仍在飞的调用硬断并返回包裹 [ErrDrainIncomplete] 的
+//     error——停机收口不得被单笔长调用无限阻塞；
 //  3. 断全部连接并停闲置回收（与 Close 同构收口：conns 摘除 + baseCtx 取消
-//     + 回收循环停止）。幂等：重复 Drain/Close 无副作用。
+//     + 回收循环停止），聚合连接关闭错误返回。幂等：重复 Drain/Close 无副作用。
 //
 // 与 Close 的区别：Close 立即断连（在飞调用撞传输错误、由自愈重连——但池
 // 已关，重连失败）；Drain 给在飞调用一个优雅收尾窗口。热换装旧池时若调用
 // 方仍持有旧池装配的工具引用，用 Drain 让在飞调用自然完成后再断；若确定
 // 无在飞（或可容忍失败重试到新池），直接 Close 即可。
-func (p *Pool) Drain(timeout time.Duration) {
+func (p *Pool) Drain(ctx context.Context) error {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return // 已收口（幂等；早先的 Drain/Close 已覆盖断连与停轮）
+		return nil // 已收口（幂等；早先的 Drain/Close 已覆盖断连与停轮）
 	}
 	p.closed = true
-	states := make([]*connState, 0, len(p.conns))
-	for _, st := range p.conns {
-		states = append(states, st)
+	states := make([]namedConn, 0, len(p.conns))
+	for name, st := range p.conns {
+		states = append(states, namedConn{name: name, st: st})
 	}
 	p.reaping = false
 	cancel := p.baseCancel
 	p.mu.Unlock()
 
-	if timeout > 0 {
-		deadline := time.Now().Add(timeout)
+	var drainIncomplete bool
+	if _, hasDeadline := ctx.Deadline(); hasDeadline || ctx.Done() != nil {
 		for {
 			busy := false
-			for _, st := range states {
-				st.mu.Lock()
-				n := st.inFlight
-				st.mu.Unlock()
+			for _, nc := range states {
+				nc.st.mu.Lock()
+				n := nc.st.inFlight
+				nc.st.mu.Unlock()
 				if n > 0 {
 					busy = true
 					break
 				}
 			}
-			if !busy || !time.Now().Before(deadline) {
+			if !busy {
 				break
 			}
-			time.Sleep(2 * time.Millisecond) // 轮询粒度：停机路径，不追求事件驱动
+			select {
+			case <-ctx.Done():
+				drainIncomplete = busy
+			case <-time.After(2 * time.Millisecond): // 轮询粒度：停机路径，不追求事件驱动
+				continue
+			}
+			break
 		}
 	}
-	p.teardown(cancel, states)
+	err := p.teardown(cancel, states)
+	if drainIncomplete {
+		return errors.Join(ErrDrainIncomplete, err)
+	}
+	return err
 }
 
 // expandServerEnv dial 期展开 ${VAR}（第十轮落地）：Headers 全量 + OAuth

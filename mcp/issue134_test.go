@@ -109,7 +109,7 @@ func TestPoolToolsBadSchemaGoesToFailed_Issue134(t *testing.T) {
 	p.OnError = func(server string, err error) {
 		notified = append(notified, server+": "+err.Error())
 	}
-	t.Cleanup(p.Close)
+	t.Cleanup(func() { _ = p.Close(context.Background()) })
 
 	res, err := p.Tools(context.Background(), []ToolSpec{{Server: "bad", AllowAll: true}})
 	if err != nil {
@@ -135,7 +135,7 @@ func TestPoolToolsBadSchemaGoesToFailed_Issue134(t *testing.T) {
 func TestPoolToolsGoodSchemaExposedWithRealContract_Issue134(t *testing.T) {
 	ts := goodSchemaServer(t)
 	p := NewPool(ServerConfig{Name: "good", URL: ts.URL + "/mcp"})
-	t.Cleanup(p.Close)
+	t.Cleanup(func() { _ = p.Close(context.Background()) })
 
 	res, err := p.Tools(context.Background(), []ToolSpec{{Server: "good", AllowAll: true}})
 	if err != nil {

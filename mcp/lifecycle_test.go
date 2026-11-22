@@ -46,7 +46,7 @@ func TestCloseServerDropsConnection(t *testing.T) {
 	// 预填目录：断连须连带失效（与 evict/ReapIdle 同构），否则重建后命中旧目录
 	setConn(p, "a", func(st *connState) { st.catalog = []toolEntry{{tool: mcp.Tool{Name: "stale"}}} })
 
-	p.CloseServer("a")
+	_ = p.CloseServer(context.Background(), "a")
 	if !a.closed {
 		t.Fatal("CloseServer 应关闭目标连接")
 	}
@@ -63,8 +63,8 @@ func TestCloseServerDropsConnection(t *testing.T) {
 	if catalog != nil {
 		t.Fatal("CloseServer 应连带失效目录缓存")
 	}
-	p.CloseServer("a")  // 幂等
-	p.CloseServer("no") // 未配置 server：静默
+	_ = p.CloseServer(context.Background(), "a")  // 幂等
+	_ = p.CloseServer(context.Background(), "no") // 未配置 server：静默
 	if b.closed || hasConn(p, "b") != true {
 		t.Fatal("幂等重入/未知 server 不应有副作用")
 	}
@@ -75,12 +75,12 @@ func TestCloseServerDropsConnection(t *testing.T) {
 func TestCloseServerTransparentRedial(t *testing.T) {
 	ts := rawFidelityServer(t)
 	p := NewPool(ServerConfig{Name: "srv", URL: ts.URL + "/mcp", Timeout: 5 * time.Second})
-	defer p.Close()
+	defer func() { _ = p.Close(context.Background()) }()
 	res, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", AllowAll: true}})
 	if err != nil || len(res.Tools) != 1 {
 		t.Fatalf("首装失败: %v tools=%d", err, len(res.Tools))
 	}
-	p.CloseServer("srv")
+	_ = p.CloseServer(context.Background(), "srv")
 	if hasConn(p, "srv") {
 		t.Fatal("断连后应无缓存连接")
 	}
@@ -141,7 +141,7 @@ func TestDrainWaitsForInFlight(t *testing.T) {
 	drainDone := make(chan struct{})
 	go func() { // 停机收口：应阻塞到在飞调用收尾
 		defer close(drainDone)
-		p.Drain(5 * time.Second)
+		_ = p.Drain(drainCtx(t, 5*time.Second))
 	}()
 
 	// 等 Drain 第 1 步生效（closed 置位；goroutine 调度有窗口，轮询对齐）
@@ -200,7 +200,7 @@ func TestDrainTimeoutHardCloses(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		p.Drain(30 * time.Millisecond)
+		_ = p.Drain(drainCtx(t, 30*time.Millisecond))
 	}()
 	select {
 	case <-done:
@@ -217,9 +217,9 @@ func TestDrainIdempotent(t *testing.T) {
 	p := NewPool()
 	cli := &fakeClient{}
 	seedFake(p, "srv", cli)
-	p.Drain(0) // <=0：不等在飞，立即断连
-	p.Drain(time.Second)
-	p.Close()
+	_ = p.Drain(context.Background()) // 无取消无 deadline：不等在飞，立即断连
+	_ = p.Drain(drainCtx(t, time.Second))
+	_ = p.Close(context.Background())
 	if !cli.closed {
 		t.Fatal("幂等路径后连接应已关闭")
 	}
@@ -233,4 +233,13 @@ func setCfg(p *Pool, name string, cfg ServerConfig) {
 	p.mu.Lock()
 	p.cfgs[name] = cfg
 	p.mu.Unlock()
+}
+
+// drainCtx 把旧 Drain(timeout) 的排空窗口编码为带 deadline 的 ctx（Close 契约
+// 的测试垫片）。
+func drainCtx(t *testing.T, d time.Duration) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	t.Cleanup(cancel)
+	return ctx
 }

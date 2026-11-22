@@ -38,7 +38,7 @@ func TestToolsExposedNameCarriesServerNamespace(t *testing.T) {
 	)
 	injectClient(t, p, "ask-ops", cliA)
 	injectClient(t, p, "upgrade-assessor", cliB)
-	defer p.Close()
+	defer func() { _ = p.Close(context.Background()) }()
 
 	tr, err := p.Tools(context.Background(), []ToolSpec{
 		{Server: "ask-ops", AllowAll: true},
@@ -77,7 +77,7 @@ func TestToolsCallStillUsesRawName(t *testing.T) {
 	cli, _ := client.NewInProcessClient(newNamedToolServer(t, "get_inventory"))
 	p := NewPool(ServerConfig{Name: "ask-ops", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "ask-ops", cli)
-	defer p.Close()
+	defer func() { _ = p.Close(context.Background()) }()
 
 	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "ask-ops", AllowAll: true}})
 	if err != nil {
@@ -123,7 +123,7 @@ func TestToolsWhitelistAcceptsBothForms(t *testing.T) {
 		if info.Name != "calc.calculate" {
 			t.Fatalf("白名单 %v：暴露名 = %q", allow, info.Name)
 		}
-		p.Close()
+		_ = p.Close(context.Background())
 	}
 }
 

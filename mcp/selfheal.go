@@ -145,11 +145,11 @@ func (t *selfHealTool) InvokableRun(ctx context.Context, args string, opts ...to
 	if ferr != nil {
 		// %w 保链：OAuth 401 等可行动确定态须可被 errors.As 穿透（自愈重连
 		// 撞上授权失效时，调用方要能拿到「需重新授权」而非笼统失败）
-		return "", fmt.Errorf("mcp: %s 自愈重连失败: %w（原始错误: %v）", t.name, ferr, err)
+		return "", Classify(fmt.Errorf("mcp: %s 自愈重连失败: %w（原始错误: %v）", t.name, ferr, err))
 	}
 	out2, err2 := fresh.InvokableRun(ctx, args, opts...)
 	if err2 != nil {
-		return "", fmt.Errorf("mcp: %s 自愈重试仍失败: %w（原始错误: %v）", t.name, err2, err)
+		return "", Classify(fmt.Errorf("mcp: %s 自愈重试仍失败: %w（原始错误: %v）", t.name, err2, err))
 	}
 	// 重试成功才回写：失败的新工具不进 inner（下次调用仍从旧 inner 触发自愈，
 	// 拿到最新的失败语义而非半换装状态）。
