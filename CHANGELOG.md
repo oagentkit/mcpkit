@@ -2,6 +2,217 @@
 
 > 本文件由 `matrix-tools/scripts/gen_changelogs.py` 从 git 历史生成，按 tag 切段、取每段内的 conventional commit 渲染。
 
+## [v0.15.0] — 2026-11-23
+
+### 重构：Pool 生命周期 Close(ctx) 契约 + procx 单源切换 + iface 协议中立包
+
+* refactor(mcp): Pool 生命周期面统一 Close(ctx) error 契约
+oekit 生态生命周期契约是 Close(ctx) error + 幂等。Pool.Close()/CloseServer(name)/
+Drain(timeout) 三处无 ctx/无 error 形态与矩阵协议分裂，宿主收口钩子
+（bootstrap AddResource 同型）无法直连。
+- Close(ctx) error / CloseServer(ctx, name) error：连接关闭错误经 errors.Join
+  聚合返回（前缀 server 名）——「有连接没收干净」从 OnError 隐式信号升级为
+  返回值；ctx 为契约参数（Close 是立即路径，文档写明不阻塞任何步骤）。
+- Drain(ctx) error：排空窗口由 ctx 编码（WithTimeout）；context.Background()
+  保持旧 timeout<=0 不等待语义；窗口期满带在飞硬断返回新哨兵
+  ErrDrainIncomplete；连接关闭错误一并聚合。
+- teardown 收口改为 namedConn 配对载体，错误聚合需要 server 名指认。
+* refactor(mcp): 子进程环境单源切 oekit/pkg/procx，解除对 runtime 的唯一依赖边
+procx 双源收敛（P0）落地侧：mcpkit 对 runtime 的依赖只有 procx.ChildEnv 一条
+（stdio MCP server 的最小环境白名单），切 pkg 单源后 mcpkit→runtime 依赖边整条
+消失——runtime 是 agent 进程运行时仓，MCP 客户端不该为一条环境纪律依赖它。
+- 环境 = pkg 基础白名单（净增 TZ/windows 必需组；agent 配置目录键移出——
+  MCP server 不是 CLI agent，需要什么由 ServerConfig.Env 显式声明，收紧有据）。
+- go.mod runtime require 删除；pkg 转直依赖。
+* feat(iface): 协议中立声明面独立成包——toolgate 零 mcp-go 消费的地板前提
+「mcp-go 隔离在 mcpkit」在 require 级为真、在模块图级为假：toolgate 只消费
+协议中立符号（RawNamer/OutputSchemer/ErrorKind/ClassifiedError），却因 import
+mcp/mcp 把 mcp-go 及其闭包拖进自己的模块图（go.mod indirect 实锤）。本包把
+协议中立面拆出，地板钉死为纯标准库。
+- ErrorKind 全家族（String/MarshalJSON/UnmarshalJSON/Retryable）+ RawNamer +
+  OutputSchemer + ClassifiedError 落 iface；mcp/mcp 别名透传（存量消费方不动）。
+- 分类判定拆两层：iface.ClassifyStdlibKind（stdlib 可判的传输层事实：
+  net/syscall/EOF/PathError/ctx——宿主自产网络错误零 mcp-go 也拿得到分类）；
+  mcp.ClassifyError 保留完整判据（JSON-RPC 哨兵/业务 payload/mcp-go 类型化
+  断连），stdlib 部分委托 iface。
+- 出口包定契约：invokableTool.InvokableRun 与 selfHealTool 两处错误出口经
+  Classify 包装（ClassifiedError 保链，errors.Is/As 穿透）——协议层事实在
+  出口落定，消费方 iface.KindOf 纯解包即可，不再触协议实现。
+- toolgate（下游 PR）切 iface 后 mcp-go 离开其模块图；发版顺序：mcpkit 先发，
+  toolgate 抬地板 + go mod tidy 清 indirect。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/pkg v0.59.0
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/pkg` | `v0.58.2` | `v0.59.0` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/pkg v0.58.2
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/pkg` | `v0.58.0` | `v0.58.2` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/pkg v0.58.0
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/pkg` | `v0.57.1` | `v0.58.0` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/pkg v0.57.1
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/pkg` | `v0.56.0` | `v0.57.1` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.40.0
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/concurrency` | `v0.39.2` | `v0.40.0` |
+| `github.com/oekit/pkg` | `v0.55.1` | `v0.56.0` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.39.2
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/concurrency` | `v0.39.1` | `v0.39.2` |
+| `github.com/oekit/pkg` | `v0.55.0` | `v0.55.1` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.39.1
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/concurrency` | `v0.38.1` | `v0.39.1` |
+| `github.com/oekit/pkg` | `v0.52.0` | `v0.55.0` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.38.1
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/concurrency` | `v0.38.0` | `v0.38.1` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/pkg v0.52.0
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/pkg` | `v0.51.0` | `v0.52.0` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.38.0
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/concurrency` | `v0.37.0` | `v0.38.0` |
+| `github.com/oekit/pkg` | `v0.50.0` | `v0.51.0` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+- 杂务(deps)：依赖地板追到最新——github.com/oekit/concurrency v0.37.0
+
+| 依赖 | 现地板 | 抬到 |
+|---|---|---|
+| `github.com/oekit/concurrency` | `v0.36.1` | `v0.37.0` |
+| `github.com/oekit/pkg` | `v0.48.0` | `v0.50.0` |
+## 为什么
+矩阵的**发版时刻地板时效**门禁（`verify_tag_floor --ref HEAD`）要求：各仓 HEAD
+（= 下次发版会发出去的内容）的依赖地板，相对那一刻的依赖最新版本，不能已落后。
+oekit 基座与矩阵模块都在高频发版 ⇒ 地板是**跑步机**，落后一格就会判红。
+## 兼容性实测
+本工具在提交前跑完 `go build` / `go vet` / `go test -race -count=1 ./...`（全绿才提交）
+与 `go mod tidy -diff`（无漂移）⇒ 改动**只影响依赖版本**，零行为差异。
+只改 `go.mod` / `go.sum` ⇒ 不需要 CHANGELOG 条目（版本段由下次发版的 `prewrite` 生成）。
+
+
+- CI：tag push 也触发门禁（与 oekit 侧同口径）
+
+各仓 CI 薄调用层此前只监听 main push / PR / manual ⇒ 打 tag 不触发 CI：
+tag 那一刻没有独立证据（tag 受保护、不可重打，而「tag 后才暴露的错」一个都跑不到）。
+本 PR 只加一行：on.push 下加 tags: ['v*']，让 tag 推送也跑共享 workflow
+（Lint / Test / CHANGELOG coverage / Receipts / 矩阵登记检查），
+与 oekit 侧的薄调用层同口径。
+关联：oagentkit/.github 的 tag 面接线。
+
+
+- 文档(AGENTS)：错误协议宣告对齐实际（stdlib 同型 sentinel；BizError 限 HTTP 宿主，本 org 库层不用）
+
 ## [v0.14.0] — 2026-11-14
 
 ### 修复(cmd)：stdio 子进程环境走 procx.ChildEnv 白名单、移除单次进程无效的 --ttl(#141,#148)
