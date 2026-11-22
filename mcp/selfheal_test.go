@@ -197,7 +197,7 @@ func TestSelfHealRedialEvictDecision(t *testing.T) {
 
 	t.Run("第二代死连接必须被摘", func(t *testing.T) {
 		p := NewPool(cfg)
-		defer p.Close()
+		defer p.Close(context.Background())
 		gen1 := &scriptedClient{tools: []string{"calc"}}
 		seedFake(p, "srv", gen1)
 		setConn(p, "srv", func(st *connState) { st.catalog = entries })
@@ -215,7 +215,7 @@ func TestSelfHealRedialEvictDecision(t *testing.T) {
 
 	t.Run("并发自愈保护：缓存已是新连接时不得误摘", func(t *testing.T) {
 		p := NewPool(cfg)
-		defer p.Close()
+		defer p.Close(context.Background())
 		fresh := &scriptedClient{tools: []string{"calc"}} // 并发自愈刚换上的新连接
 		seedFake(p, "srv", fresh)
 		setConn(p, "srv", func(st *connState) { st.catalog = entries })
@@ -240,7 +240,7 @@ func TestSelfHealRedialEvictDecision(t *testing.T) {
 
 	t.Run("nil dead 跳过比对直接走建连", func(t *testing.T) {
 		p := NewPool(cfg)
-		defer p.Close()
+		defer p.Close(context.Background())
 		cached := &scriptedClient{tools: []string{"calc"}}
 		seedFake(p, "srv", cached)
 		setConn(p, "srv", func(st *connState) { st.catalog = entries })
@@ -282,7 +282,7 @@ func TestSelfHealRecoversAcrossTwoDisconnects(t *testing.T) {
 		}
 		return g, nil, nil
 	}
-	defer p.Close()
+	defer p.Close(context.Background())
 
 	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", AllowAll: true}})
 	if err != nil || len(tr.Tools) != 1 {

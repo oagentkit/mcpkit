@@ -18,7 +18,7 @@ func TestPoolToolByName(t *testing.T) {
 	cli, _ := client.NewInProcessClient(newTestServer(t))
 	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "calc", cli)
-	defer p.Close()
+	defer p.Close(context.Background())
 
 	got, err := p.Tool(context.Background(), "calc", "calculate")
 	if err != nil {
@@ -52,7 +52,7 @@ func TestPoolToolNotFoundIsExplicitError(t *testing.T) {
 	cli, _ := client.NewInProcessClient(newTestServer(t))
 	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "calc", cli)
-	defer p.Close()
+	defer p.Close(context.Background())
 
 	got, err := p.Tool(context.Background(), "calc", "no_such_tool")
 	if err == nil {
@@ -69,7 +69,7 @@ func TestPoolToolNotFoundIsExplicitError(t *testing.T) {
 // TestPoolToolUnknownServerIsExplicitError 钉住「server 未配置」是显式错误。
 func TestPoolToolUnknownServerIsExplicitError(t *testing.T) {
 	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
-	defer p.Close()
+	defer p.Close(context.Background())
 
 	if _, err := p.Tool(context.Background(), "nope", "calculate"); err == nil {
 		t.Fatal("未配置的 server 应报错")
@@ -88,7 +88,7 @@ func TestToolsResultByServer(t *testing.T) {
 	)
 	injectClient(t, p, "ask-ops", cliA)
 	injectClient(t, p, "upgrade-assessor", cliB)
-	defer p.Close()
+	defer p.Close(context.Background())
 
 	tr, err := p.Tools(context.Background(), []ToolSpec{
 		{Server: "ask-ops", AllowAll: true},

@@ -224,7 +224,7 @@ func TestStdioRawTypedRequestIDSingleSource(t *testing.T) {
 	p := NewPool(ServerConfig{Name: "srv", Timeout: 10 * time.Second,
 		Env:     []string{"MCPKIT_SCRIPTED_HELPER=1"}, // ChildEnv 白名单字面量透传（helper 守卫标记）
 		Command: []string{testBin, "-test.run=TestScriptedMCPHelperEntry", "-test.v=false"}})
-	defer p.Close()
+	defer p.Close(context.Background())
 
 	// 首装：dial（transport 单源包装）+ initialize + raw 列举
 	res, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", AllowAll: true}})
