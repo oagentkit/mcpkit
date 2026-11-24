@@ -82,13 +82,7 @@ github.com/nikolalohinski/gonja v1.5.3 h1:GsA+EEaZDZPGJ8JtpeGN78jidhOlxeJROpqMT9
 github.com/nikolalohinski/gonja v1.5.3/go.mod h1:RmjwxNiXAEqcq1HeK5SSMmqFJvKOfTfXhkJv6YBtPa4=
 github.com/oekit/concurrency v0.40.0 h1:gFwginpsVXdY4R/hzwicyBa2u1WHmCN1h5Bw6ztlpBw=
 github.com/oekit/concurrency v0.40.0/go.mod h1:nnPMxDuUq8H9ZrqhsRpGY2n1FMAL0Jio2MZRPKlPeJo=
-<<<<<<< HEAD
-github.com/oekit/pkg v0.61.1 h1:vJtwzIvkiMv5Xu9m1u6mglcw1sMiDJnPL7kzK8iEIlY=
-github.com/oekit/pkg v0.61.1/go.mod h1:Cr6sJpBX2a0gAIgLa32+NY69h/UZtuN6L1ZdXtP9upo=
-=======
 github.com/oekit/pkg v0.61.2 h1:QvD2SHz6AB4esg+tneqZUwCszY5H/Zku5smCXMvRQpc=
-github.com/oekit/pkg v0.61.2/go.mod h1:Cr6sJpBX2a0gAIgLa32+NY69h/UZtuN6L1ZdXtP9upo=
->>>>>>> a5915ef (build: 依赖地板对齐——pkg → v0.61.2)
 github.com/onsi/ginkgo v1.6.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
 github.com/onsi/ginkgo v1.8.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
 github.com/onsi/gomega v1.5.0/go.mod h1:ex+gbHU/CVuBBDIJjb2X0qEXbFg53c61hWP/1CpauHY=
