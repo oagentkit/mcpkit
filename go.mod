@@ -9,11 +9,7 @@ require (
 	github.com/eino-contrib/jsonschema v1.0.3
 	github.com/mark3labs/mcp-go v1.1.1
 	github.com/oekit/concurrency v0.40.0
-<<<<<<< HEAD
-	github.com/oekit/pkg v0.61.1
-=======
 	github.com/oekit/pkg v0.61.2
->>>>>>> a5915ef (build: 依赖地板对齐——pkg → v0.61.2)
 )
 
 require (
