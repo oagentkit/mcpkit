@@ -11,3 +11,7 @@ packages:
     level: Experimental
     since: v0.15.0
     reason: "MCP 工具调用面协议中立声明（评审点名接口，只准标准库）；未过一个 minor 无 breaking 窗口（api-compat.md 晋级条件一），初值如实记为不承诺兼容"
+  - pkg: conformance
+    level: Experimental
+    since: v0.16.0
+    reason: "MCP 工具面 conformance 契约套件（ErrorKind 五分类语义稳定 + 元数据信封契约 + 能力接口零值/缺省，面向第三方实现者）；新包初值如实记为不承诺兼容（api-compat.md 晋级条件一）"
