@@ -7,6 +7,8 @@
 //
 // 注解（annotations）随目录同源提取，供并发治理与风险分级消费（对标 ZCode
 // readOnlyHint/idempotentHint/destructiveHint → 风险级 + concurrentSafe 映射）。
+//
+// 生命周期: Experimental——未过一个 minor 无 breaking 窗口（api-compat.md 晋级条件一），初值不承诺兼容
 package mcp
 
 import (

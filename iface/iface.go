@@ -17,6 +17,8 @@
 // 类型）与 Classify（包装）不进本包；mcp/mcp 在工具调用出口把错误包成
 // [ClassifiedError]，本包的 [KindOf] 经 errors.As 解包即可取分类——协议层
 // 事实在出口已落定，消费方无需再触协议实现。
+//
+// 生命周期: Experimental——未过一个 minor 无 breaking 窗口（api-compat.md 晋级条件一），初值不承诺兼容
 package iface
 
 import (
