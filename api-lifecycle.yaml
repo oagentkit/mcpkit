@@ -1,0 +1,13 @@
+# api-lifecycle 定级清单（判据同源 matrix-tools docs/adr/ADR-002 引用的
+# yi-nology/goagent-kernel docs/api-compat.md：breaking 四类 / 三级承诺 / 晋级三维）
+# 本文件一放，matrix-tools verify_api_lifecycle 全套判定即生效（新增包必须登记）。
+version: 1
+packages:
+  - pkg: mcp
+    level: Experimental
+    since: v0.15.0
+    reason: "MCP 客户端与工具池（mcp-go 重依赖隔离面）；未过一个 minor 无 breaking 窗口（api-compat.md 晋级条件一），初值如实记为不承诺兼容"
+  - pkg: iface
+    level: Experimental
+    since: v0.15.0
+    reason: "MCP 工具调用面协议中立声明（评审点名接口，只准标准库）；未过一个 minor 无 breaking 窗口（api-compat.md 晋级条件一），初值如实记为不承诺兼容"
